@@ -1,0 +1,6 @@
+include readme.md
+include requirements.txt
+include LICENSE
+recursive-include rayssh *.py
+global-exclude __pycache__
+global-exclude *.py[co] 
