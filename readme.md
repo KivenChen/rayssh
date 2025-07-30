@@ -11,12 +11,16 @@ cd rayssh
 pip install -e .
 ```
 
+After installation, you can use the `rayssh` command from your terminal directly.
+
 ## Usage
 
-After installation, you can use the `rayssh` command directly:
+To use `rayssh`, you don't even need to start a local Ray cluster - just set a `RAY_ADDRESS` environment variable to the address of a Ray cluster head node, and you are all set to command any Ray node in the cluster.
+
+However, you do need to make sure your Python version and Ray version are compatible with the Ray cluster you are connecting to.
 
 ```bash
-kiven@Kivs-Macbook rayssh % rayssh --help
+kiven@Kivs-Macbook ~ % rayssh --help
 RaySSH: Command a Ray node like a shell
 
 Usage:
