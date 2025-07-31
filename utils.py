@@ -19,8 +19,8 @@ def is_valid_ip(ip_str: str) -> bool:
 
 def is_valid_node_id(node_id: str) -> bool:
     """Check if the given string is a valid Ray node ID format."""
-    # Ray node IDs are typically hex strings
-    return bool(re.match(r'^[a-fA-F0-9]+$', node_id)) and len(node_id) >= 8
+    # Ray node IDs are typically hex strings, allow minimum 6 chars for prefix matching
+    return bool(re.match(r'^[a-fA-F0-9]+$', node_id)) and len(node_id) >= 6
 
 
 def parse_node_argument(node_arg: str) -> tuple[str, str]:

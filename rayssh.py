@@ -355,7 +355,8 @@ def print_nodes_table():
         # Print each node in table format
         for i, node in enumerate(nodes, 1):
             node_ip = node.get('NodeManagerAddress', 'N/A')
-            node_id = node.get('NodeID', 'N/A')[:6]  # Show only first 6 chars
+            full_node_id = node.get('NodeID', 'N/A')
+            node_id = f"{full_node_id[:6]}..." if full_node_id != 'N/A' else 'N/A'  # Show first 6 chars with ellipsis
             
             # Mark head node
             is_head_node = node.get('NodeID') == head_node_id
@@ -391,7 +392,7 @@ def print_nodes_table():
                 print(f"{'':12} {'└─':16} {', '.join(special_resources)}")
         
         print("=" * 85)
-        print(f"💡 Use: rayssh <ip_address> or rayssh <node_id> to connect")
+        print(f"💡 Use: rayssh <ip_address> or rayssh <node_id_prefix> to connect")
         print(f"👑 Head node is marked with crown")
             
     except Exception as e:
@@ -412,7 +413,7 @@ def print_help():
 
 📝 Arguments:
     🌍 node_ip_address    IP address of the target Ray node (format: xxx.yyy.zzz.aaa)
-    🆔 node_id           Ray node ID (hexadecimal string)
+    🆔 node_id           Ray node ID or prefix (hexadecimal string, minimum 6 characters)
 
 ⚙️  Options:
     ❓ --help, -h        Show this help message and exit
@@ -421,7 +422,8 @@ def print_help():
 
 💡 Examples:
      rayssh 192.168.1.100           # Connect to node by IP
-     rayssh a1b2c3d4e5f6            # Connect to node by ID
+     rayssh a1b2c3d4e5f6            # Connect to node by ID prefix (min 6 chars)
+     rayssh a1b2c3d4e5f67890abcdef   # Connect to node by full ID
      rayssh --list                  # List all available nodes
      rayssh --ls                    # List all available nodes (alias)
      rayssh --show                  # List all available nodes (alias)
