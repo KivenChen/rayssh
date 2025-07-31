@@ -103,15 +103,28 @@ class RaySSHClient:
         try:
             node_info = ray.get(self.shell_actor.get_node_info.remote())
             hostname = node_info['hostname']
-            user = node_info['user']
+            user = node_info['user']  # Get the real user for home directory logic
             cwd = node_info['cwd']
             
-            # Shorten home directory path
+            # Shorten home directory path using the real username
             home = f"/home/{user}"
             if cwd.startswith(home):
-                cwd = cwd.replace(home, "~", 1)
+                if cwd == home:
+                    # Exactly in home directory
+                    display_cwd = "~"
+                else:
+                    # In a subdirectory of home, show only the basename
+                    relative_path = cwd[len(home):].lstrip('/')
+                    if '/' in relative_path:
+                        display_cwd = os.path.basename(relative_path)
+                    else:
+                        display_cwd = relative_path
+            else:
+                # Not in home directory, show only the basename
+                display_cwd = os.path.basename(cwd) if cwd != '/' else '/'
             
-            return f"{user}@{hostname}:{cwd}$ "
+            # Always use "RaySSH" as the displayed username in the prompt
+            return f"RaySSH@{hostname}:{display_cwd}$ "
         except Exception:
             return "rayssh$ "
     
@@ -313,53 +326,50 @@ def print_nodes_table():
         nodes = get_ray_cluster_nodes()
         
         if not nodes:
-            print("No Ray nodes found in the cluster.")
+            print("🚫 No Ray nodes found in the cluster.")
             return
         
-        # Print each node with all its resources
+        print(f"🌐 Ray Cluster Nodes ({len(nodes)} found)")
+        print("=" * 80)
+        
+        # Print table header
+        print(f"{'📍 Node':<8} {'🌍 IP Address':<18} {'🆔 Node ID':<20} {'💚 Status':<10} {'🖥️  CPU':<8} {'💾 Memory':<12}")
+        print("-" * 80)
+        
+        # Print each node in table format
         for i, node in enumerate(nodes, 1):
             node_ip = node.get('NodeManagerAddress', 'N/A')
-            node_id = node.get('NodeID', 'N/A')
-            alive = "Yes" if node.get('Alive', False) else "No"
+            node_id = node.get('NodeID', 'N/A')[:16] + '...' if len(node.get('NodeID', '')) > 16 else node.get('NodeID', 'N/A')
+            alive = node.get('Alive', False)
+            status_icon = "✅ Online" if alive else "❌ Offline"
             
-            print(f"\nNode {i}:")
-            print(f"  IP Address: {node_ip}")
-            print(f"  Node ID:    {node_id}")
-            print(f"  Alive:      {alive}")
-            print(f"  Resources:")
-            
-            # Get and format all resources
+            # Get resources
             resources = node.get('Resources', {})
-            if not resources:
-                print(f"    No resources available")
-            else:
-                # Sort resources for consistent display
-                sorted_resources = sorted(resources.items())
-                
-                for key, value in sorted_resources:
-                    if key == 'memory':
-                        # Convert bytes to GB for memory
-                        gb_value = value / (1024**3) if value > 0 else 0
-                        print(f"    {key:<20}: {value:.0f} bytes ({gb_value:.2f} GB)")
-                    elif key == 'object_store_memory':
-                        # Convert bytes to GB for object store memory
-                        gb_value = value / (1024**3) if value > 0 else 0
-                        print(f"    {key:<20}: {value:.0f} bytes ({gb_value:.2f} GB)")
-                    elif key.startswith('node:'):
-                        # Node-specific resources
-                        print(f"    {key:<20}: {value}")
-                    else:
-                        # Other resources (CPU, GPU, etc.)
-                        if isinstance(value, float) and value.is_integer():
-                            print(f"    {key:<20}: {int(value)}")
-                        else:
-                            print(f"    {key:<20}: {value}")
+            cpu = int(resources.get('CPU', 0)) if resources.get('CPU', 0) else 0
+            memory_bytes = resources.get('memory', 0)
+            memory_gb = f"{memory_bytes / (1024**3):.1f}GB" if memory_bytes > 0 else "0GB"
             
-            if i < len(nodes):
-                print("-" * 60)
+            print(f"{i:<8} {node_ip:<18} {node_id:<20} {status_icon:<10} {cpu:<8} {memory_gb:<12}")
+            
+            # Print additional resources if they exist
+            special_resources = []
+            for key, value in sorted(resources.items()):
+                if key not in ['CPU', 'memory', 'object_store_memory'] and not key.startswith('node:'):
+                    if key == 'GPU':
+                        special_resources.append(f"🎮 GPU: {int(value) if isinstance(value, float) and value.is_integer() else value}")
+                    elif 'accelerator' in key.lower() or 'tpu' in key.lower():
+                        special_resources.append(f"⚡ {key}: {int(value) if isinstance(value, float) and value.is_integer() else value}")
+                    else:
+                        special_resources.append(f"🔧 {key}: {int(value) if isinstance(value, float) and value.is_integer() else value}")
+            
+            if special_resources:
+                print(f"{'':8} {'Additional:':18} {', '.join(special_resources)}")
+        
+        print("=" * 80)
+        print(f"💡 Use: rayssh <ip_address> or rayssh <node_id> to connect")
             
     except Exception as e:
-        print(f"Error listing nodes: {e}", file=sys.stderr)
+        print(f"❌ Error listing nodes: {e}", file=sys.stderr)
         return 1
     
     return 0
@@ -368,37 +378,37 @@ def print_nodes_table():
 def print_help():
     """Print help information."""
     help_text = """
-RaySSH: Command a Ray node like a shell
+🚀 RaySSH: Command a Ray node like a shell
 
-Usage:
+📋 Usage:
     rayssh <node_ip_address | node_id> [options]
     rayssh --list | --ls | --show
 
-Arguments:
-    node_ip_address    IP address of the target Ray node (format: xxx.yyy.zzz.aaa)
-    node_id           Ray node ID (hexadecimal string)
+📝 Arguments:
+    🌍 node_ip_address    IP address of the target Ray node (format: xxx.yyy.zzz.aaa)
+    🆔 node_id           Ray node ID (hexadecimal string)
 
-Options:
-    --help, -h        Show this help message and exit
-    --list, --ls, --show
+⚙️  Options:
+    ❓ --help, -h        Show this help message and exit
+    📊 --list, --ls, --show
                       List all available Ray nodes in a table format
 
-Examples:
-    rayssh 192.168.1.100           # Connect to node by IP
-    rayssh a1b2c3d4e5f6            # Connect to node by ID
-    rayssh --list                  # List all available nodes
-    rayssh --ls                    # List all available nodes (alias)
-    rayssh --show                  # List all available nodes (alias)
+💡 Examples:
+     rayssh 192.168.1.100           # Connect to node by IP
+     rayssh a1b2c3d4e5f6            # Connect to node by ID
+     rayssh --list                  # List all available nodes
+     rayssh --ls                    # List all available nodes (alias)
+     rayssh --show                  # List all available nodes (alias)
 
-Once connected, you can use the remote shell just like a regular shell:
-- Most standard shell commands work (ls, cat, grep, etc.)
-- Built-in commands: cd, pwd, export, pushd, popd, dirs
-- Tab completion for file names (press Tab to autocomplete)
-- Ctrl-C interrupts the current command
-- Ctrl-D or 'exit' or 'quit' to disconnect
-- Working directory and environment variables are maintained across commands
+🖥️  Once connected, you can use the remote shell just like a regular shell:
+- 📁 Most standard shell commands work (ls, cat, grep, etc.)
+- 🏠 Built-in commands: cd, pwd, export, pushd, popd, dirs
+- ⭐ Tab completion for file names (press Tab to autocomplete)
+- ⚡ Ctrl-C interrupts the current command
+- 🚪 Ctrl-D or 'exit' or 'quit' to disconnect
+- 💾 Working directory and environment variables are maintained across commands
 
-Note: This is not a full shell implementation. Complex features like pipes,
+⚠️  Note: This is not a full shell implementation. Complex features like pipes,
 redirections, job control, and interactive programs may not work as expected.
 """
     print(help_text.strip())
