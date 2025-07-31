@@ -323,50 +323,76 @@ def print_nodes_table():
         ensure_ray_initialized()
         
         # Get all nodes in the cluster
-        nodes = get_ray_cluster_nodes()
+        all_nodes = get_ray_cluster_nodes()
         
-        if not nodes:
+        if not all_nodes:
             print("🚫 No Ray nodes found in the cluster.")
             return
         
-        print(f"🌐 Ray Cluster Nodes ({len(nodes)} found)")
-        print("=" * 80)
+        # Filter to only show alive nodes
+        nodes = [node for node in all_nodes if node.get('Alive', False)]
+        
+        if not nodes:
+            print("🚫 No alive Ray nodes found in the cluster.")
+            return
+        
+        print(f"🌐 Ray Cluster Nodes ({len(nodes)} alive)")
+        print("=" * 85)
         
         # Print table header
-        print(f"{'📍 Node':<8} {'🌍 IP Address':<18} {'🆔 Node ID':<20} {'💚 Status':<10} {'🖥️  CPU':<8} {'💾 Memory':<12}")
-        print("-" * 80)
+        print(f"{'📍 Node':<12} {'🌍 IP Address':<16} {'🆔 ID':<8} {'🖥️  CPU':<12} {'🎮 GPU':<12} {'💾 Memory':<12}")
+        print("-" * 85)
+        
+        # Detect head node (usually the first node or one with special characteristics)
+        head_node_id = None
+        for node in nodes:
+            resources = node.get('Resources', {})
+            # Head node typically has 'node:' resources or is the first node
+            if any(key.startswith('node:') for key in resources.keys()) or head_node_id is None:
+                head_node_id = node.get('NodeID')
+                break
         
         # Print each node in table format
         for i, node in enumerate(nodes, 1):
             node_ip = node.get('NodeManagerAddress', 'N/A')
-            node_id = node.get('NodeID', 'N/A')[:16] + '...' if len(node.get('NodeID', '')) > 16 else node.get('NodeID', 'N/A')
-            alive = node.get('Alive', False)
-            status_icon = "✅ Online" if alive else "❌ Offline"
+            node_id = node.get('NodeID', 'N/A')[:6]  # Show only first 6 chars
+            
+            # Mark head node
+            is_head_node = node.get('NodeID') == head_node_id
+            node_label = f"{'👑 Head' if is_head_node else str(i)}"
             
             # Get resources
             resources = node.get('Resources', {})
-            cpu = int(resources.get('CPU', 0)) if resources.get('CPU', 0) else 0
+            
+            # CPU usage formatting
+            cpu_total = int(resources.get('CPU', 0)) if resources.get('CPU', 0) else 0
+            cpu_display = f"{cpu_total}" if cpu_total > 0 else "0"
+            
+            # GPU usage formatting
+            gpu_total = int(resources.get('GPU', 0)) if resources.get('GPU', 0) else 0
+            gpu_display = f"{gpu_total}" if gpu_total > 0 else "0"
+            
+            # Memory formatting
             memory_bytes = resources.get('memory', 0)
             memory_gb = f"{memory_bytes / (1024**3):.1f}GB" if memory_bytes > 0 else "0GB"
             
-            print(f"{i:<8} {node_ip:<18} {node_id:<20} {status_icon:<10} {cpu:<8} {memory_gb:<12}")
+            print(f"{node_label:<12} {node_ip:<16} {node_id:<8} {cpu_display:<12} {gpu_display:<12} {memory_gb:<12}")
             
-            # Print additional resources if they exist
+            # Print additional special resources if they exist
             special_resources = []
             for key, value in sorted(resources.items()):
-                if key not in ['CPU', 'memory', 'object_store_memory'] and not key.startswith('node:'):
-                    if key == 'GPU':
-                        special_resources.append(f"🎮 GPU: {int(value) if isinstance(value, float) and value.is_integer() else value}")
-                    elif 'accelerator' in key.lower() or 'tpu' in key.lower():
+                if key not in ['CPU', 'GPU', 'memory', 'object_store_memory'] and not key.startswith('node:'):
+                    if 'accelerator' in key.lower() or 'tpu' in key.lower():
                         special_resources.append(f"⚡ {key}: {int(value) if isinstance(value, float) and value.is_integer() else value}")
                     else:
                         special_resources.append(f"🔧 {key}: {int(value) if isinstance(value, float) and value.is_integer() else value}")
             
             if special_resources:
-                print(f"{'':8} {'Additional:':18} {', '.join(special_resources)}")
+                print(f"{'':12} {'└─':16} {', '.join(special_resources)}")
         
-        print("=" * 80)
+        print("=" * 85)
         print(f"💡 Use: rayssh <ip_address> or rayssh <node_id> to connect")
+        print(f"👑 Head node is marked with crown")
             
     except Exception as e:
         print(f"❌ Error listing nodes: {e}", file=sys.stderr)
