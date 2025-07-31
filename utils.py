@@ -5,6 +5,7 @@ import ipaddress
 import os
 import sys
 import subprocess
+import signal
 from typing import Optional, Dict, List
 
 
@@ -109,15 +110,118 @@ def ensure_ray_initialized():
             os.environ['RAY_RAYLET_LOG_LEVEL'] = 'FATAL'  # Suppress raylet logs
             os.environ['RAY_CORE_WORKER_LOG_LEVEL'] = 'FATAL'  # Suppress core worker logs
             
-            # Initialize Ray with suppressed file system monitor warnings
-            ray.init(
-                logging_level='FATAL',  # Only show fatal errors
-                log_to_driver=False,    # Don't send raylet logs to driver
-                include_dashboard=False, # Disable dashboard to reduce log noise
-                _temp_dir='/tmp/ray',   # Use consistent temp directory
-                configure_logging=False, # Don't configure Python logging
-                ignore_reinit_error=True # Ignore reinitialization errors
-            )
+            ray_address = os.environ.get('RAY_ADDRESS')
+            
+            # If we have a RAY_ADDRESS, try different connection strategies
+            if ray_address:
+                success = False
+                
+                # Strategy 1: Try direct connection with timeout (original behavior)
+                print("Attempting to connect to Ray cluster...")
+                try:
+                    def timeout_handler(signum, frame):
+                        raise TimeoutError("Ray initialization timed out")
+                    
+                    # Set a 10 second timeout for ray.init()
+                    signal.signal(signal.SIGALRM, timeout_handler)
+                    signal.alarm(10)
+                    
+                    ray.init(
+                        logging_level='FATAL',
+                        log_to_driver=False,
+                        include_dashboard=False,
+                        _temp_dir='/tmp/ray',
+                        configure_logging=False,
+                        ignore_reinit_error=True
+                    )
+                    signal.alarm(0)  # Cancel the alarm
+                    success = True
+                    print("✅ Connected to Ray cluster via direct connection")
+                    
+                except (TimeoutError, Exception) as e:
+                    signal.alarm(0)  # Cancel the alarm
+                    print(f"⚠️  Direct connection failed: {e}")
+                    
+                    if ray.is_initialized():
+                        ray.shutdown()
+                    
+                    # Strategy 2: Try Ray Client mode if address doesn't have ray:// prefix
+                    if not ray_address.startswith('ray://'):
+                        print("Trying Ray Client mode...")
+                        try:
+                            # Extract host from address
+                            host = ray_address.split(':')[0]
+                            client_address = f"ray://{host}:10001"  # Standard Ray Client port
+                            
+                            # Temporarily set RAY_ADDRESS for ray client
+                            original_address = os.environ.get('RAY_ADDRESS')
+                            os.environ['RAY_ADDRESS'] = client_address
+                            
+                            ray.init(
+                                logging_level='FATAL',
+                                log_to_driver=False,
+                                include_dashboard=False,
+                                configure_logging=False,
+                                ignore_reinit_error=True
+                            )
+                            success = True
+                            print("✅ Connected to Ray cluster via Ray Client")
+                            
+                        except Exception as client_e:
+                            print(f"⚠️  Ray Client connection failed: {client_e}")
+                            if ray.is_initialized():
+                                ray.shutdown()
+                            
+                            # Restore original address
+                            if original_address:
+                                os.environ['RAY_ADDRESS'] = original_address
+                            else:
+                                os.environ.pop('RAY_ADDRESS', None)
+                
+                if not success:
+                    # Strategy 3: Start local cluster as fallback
+                    print("Falling back to local Ray cluster...")
+                    # Temporarily remove RAY_ADDRESS to force local cluster
+                    original_address = os.environ.pop('RAY_ADDRESS', None)
+                    try:
+                        # Ensure Ray is completely shutdown before starting local cluster
+                        try:
+                            ray.shutdown()
+                        except:
+                            pass
+                        
+                        # Clear any Ray environment variables that might interfere
+                        for key in list(os.environ.keys()):
+                            if key.startswith('RAY_'):
+                                if key not in ['RAY_DISABLE_IMPORT_WARNING', 'RAY_DEDUP_LOGS', 'RAY_RAYLET_LOG_LEVEL', 'RAY_CORE_WORKER_LOG_LEVEL']:
+                                    os.environ.pop(key, None)
+                        
+                        ray.init(
+                            logging_level='FATAL',
+                            log_to_driver=False,
+                            include_dashboard=False,
+                            _temp_dir='/tmp/ray',
+                            configure_logging=False,
+                            ignore_reinit_error=True
+                        )
+                        print("✅ Started local Ray cluster")
+                        print("⚠️  Note: Using local cluster instead of remote cluster")
+                    except Exception as local_e:
+                        # Restore original address
+                        if original_address:
+                            os.environ['RAY_ADDRESS'] = original_address
+                        raise RuntimeError(f"Failed to initialize Ray with local cluster: {local_e}")
+            else:
+                # No RAY_ADDRESS set, use original local initialization
+                ray.init(
+                    logging_level='FATAL',
+                    log_to_driver=False,
+                    include_dashboard=False,
+                    _temp_dir='/tmp/ray',
+                    configure_logging=False,
+                    ignore_reinit_error=True
+                )
+                
         except Exception as e:
             raise RuntimeError(f"Failed to initialize Ray: {e}")
 
