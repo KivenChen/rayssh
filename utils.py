@@ -1,11 +1,9 @@
-import ray
-import re
-import socket
 import ipaddress
 import os
-import sys
-import subprocess
-from typing import Optional, Dict, List
+import re
+from typing import Dict, List, Optional
+
+import ray
 
 
 def is_valid_ip(ip_str: str) -> bool:
@@ -47,30 +45,30 @@ def get_ray_cluster_nodes() -> List[Dict]:
 def find_node_by_ip(target_ip: str) -> Optional[Dict]:
     """Find a Ray node by its IP address."""
     nodes = get_ray_cluster_nodes()
-    
+
     for node in nodes:
         # Check both NodeManagerAddress and internal/external IPs
         node_ip = node.get('NodeManagerAddress')
         if node_ip == target_ip:
             return node
-            
+
         # Also check if the target IP matches any of the node's addresses
         resources = node.get('Resources', {})
         if 'node:' + target_ip in resources:
             return node
-    
+
     return None
 
 
 def find_node_by_id(target_node_id: str) -> Optional[Dict]:
     """Find a Ray node by its node ID."""
     nodes = get_ray_cluster_nodes()
-    
+
     for node in nodes:
         node_id = node.get('NodeID')
         if node_id and (node_id == target_node_id or node_id.startswith(target_node_id)):
             return node
-    
+
     return None
 
 
@@ -80,7 +78,7 @@ def find_target_node(node_arg: str) -> Dict:
     Returns the node information dict.
     """
     arg_type, value = parse_node_argument(node_arg)
-    
+
     if arg_type == 'ip':
         node = find_node_by_ip(value)
         if not node:
@@ -89,11 +87,11 @@ def find_target_node(node_arg: str) -> Dict:
         node = find_node_by_id(value)
         if not node:
             raise ValueError(f"No Ray node found with node ID: {value}")
-    
+
     # Check if node is alive
     if not node.get('Alive', False):
         raise ValueError(f"Target node is not alive: {value}")
-    
+
     return node
 
 
@@ -108,7 +106,7 @@ def ensure_ray_initialized():
             os.environ['GLOG_logtostderr'] = '0'  # Don't log to stderr
             os.environ['RAY_RAYLET_LOG_LEVEL'] = 'FATAL'  # Suppress raylet logs
             os.environ['RAY_CORE_WORKER_LOG_LEVEL'] = 'FATAL'  # Suppress core worker logs
-            
+
             # Initialize Ray with suppressed file system monitor warnings
             ray.init(
                 logging_level='FATAL',  # Only show fatal errors

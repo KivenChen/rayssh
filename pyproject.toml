@@ -36,4 +36,28 @@ Homepage = "https://github.com/username/rayssh"
 Repository = "https://github.com/username/rayssh"
 
 [tool.setuptools]
-py-modules = ["rayssh", "shell_actor", "utils"] 
+py-modules = ["rayssh", "shell_actor", "utils"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py38"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",  # line too long, handled by formatter
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto" 
