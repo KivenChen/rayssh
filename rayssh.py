@@ -2,11 +2,13 @@
 
 import atexit
 import os
+import queue
 import signal
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 import ray
 
@@ -37,6 +39,7 @@ class RaySSHClient:
         self.shell_actor = None
         self.target_node = None
         self.current_command_future = None
+        self.current_interactive_session = None  # Track active interactive session
         self.shutdown_event = threading.Event()
 
         # Set up signal handlers
@@ -53,6 +56,19 @@ class RaySSHClient:
             try:
                 ray.get(self.shell_actor.interrupt_current_command.remote())
                 print("\n^C")
+            except Exception as e:
+                print(f"\nWarning: Could not interrupt command: {e}")
+                # Force cancel the future to prevent hanging
+                try:
+                    self.current_command_future.cancel()
+                except Exception:
+                    pass
+        elif self.current_interactive_session:
+            # Interrupt the interactive session instead of exiting shell
+            try:
+                ray.get(self.shell_actor.terminate_interactive_command.remote(self.current_interactive_session))
+                print("\n^C")
+                self.current_interactive_session = None
             except Exception:
                 pass
         else:
@@ -312,6 +328,140 @@ class RaySSHClient:
             print(f"Error in vim session: {e}", file=sys.stderr)
             return True
 
+    def _is_interactive_command(self, command: str) -> bool:
+        """
+        Check if a command is likely to be interactive (needs stdin).
+        """
+        interactive_programs = {
+            'python', 'python3', 'node', 'nodejs', 'ruby', 'irb', 'php',
+            'mysql', 'psql', 'sqlite3', 'redis-cli', 'mongo', 'bc',
+            'ftp', 'telnet', 'ssh', 'less', 'more', 'top', 'htop',
+            'vi', 'nano', 'emacs', 'pico'
+        }
+
+        # Get the base command (first word)
+        cmd_parts = command.strip().split()
+        if not cmd_parts:
+            return False
+
+        base_cmd = os.path.basename(cmd_parts[0])
+
+        # Check if it's a known interactive program
+        if base_cmd in interactive_programs:
+            return True
+
+        # Check for some patterns that suggest interactivity
+        if any(pattern in command.lower() for pattern in ['-i ', '--interactive']):
+            return True
+
+        return False
+
+    def _handle_interactive_command(self, command: str) -> bool:
+        """
+        Handle an interactive command that needs stdin support.
+
+        Returns:
+            True to continue, False to exit
+        """
+        try:
+            print(f"RaySSH: 🔄 Starting interactive session: {command}")
+
+            # Start the interactive command
+            start_result = ray.get(self.shell_actor.start_interactive_command.remote(command))
+
+            if not start_result['success']:
+                print(f"Failed to start interactive command: {start_result['error']}", file=sys.stderr)
+                return True
+
+            session_id = start_result['session_id']
+            self.current_interactive_session = session_id  # Track for Ctrl-C handling
+            print("RaySSH: ⚡ Interactive session started (Ctrl-C to interrupt)")
+
+            try:
+                # Use threading for concurrent input/output handling
+                input_queue = queue.Queue()
+
+                def input_reader():
+                    """Read input from stdin in separate thread"""
+                    while self.current_interactive_session == session_id:
+                        try:
+                            line = input()  # Blocking read for user input
+                            input_queue.put(line + '\n')
+                        except (EOFError, KeyboardInterrupt):
+                            input_queue.put(None)  # Signal end
+                            break
+                        except Exception:
+                            break
+
+                # Start input reader thread
+                input_thread = threading.Thread(target=input_reader, daemon=True)
+                input_thread.start()
+
+                # Main interactive loop
+                finished = False
+
+                while not finished and not self.shutdown_event.is_set() and self.current_interactive_session:
+                    # Read output from remote process
+                    output_result = ray.get(self.shell_actor.read_output_chunk.remote(session_id, 0.1))
+
+                    if output_result['success']:
+                        # Display any output
+                        if output_result['stdout']:
+                            filtered_stdout = self._filter_raylet_warnings(output_result['stdout'])
+                            if filtered_stdout:
+                                print(filtered_stdout, end='', flush=True)
+                        if output_result['stderr']:
+                            filtered_stderr = self._filter_raylet_warnings(output_result['stderr'])
+                            if filtered_stderr:
+                                print(filtered_stderr, end='', flush=True, file=sys.stderr)
+
+                        finished = output_result['finished']
+                        if finished:
+                            returncode = output_result['returncode']
+                            if returncode and returncode != 0:
+                                print(f"\nRaySSH: Process exited with code {returncode}")
+                            break
+
+                    # Check for user input (non-blocking)
+                    try:
+                        while not input_queue.empty():
+                            user_input = input_queue.get_nowait()
+                            if user_input is None:  # EOF or interrupt
+                                finished = True
+                                break
+
+                            # Send input to remote process
+                            send_result = ray.get(self.shell_actor.send_stdin_data.remote(session_id, user_input))
+                            if not send_result['success']:
+                                if "terminated" in send_result['error']:
+                                    finished = True
+                                    break
+                                else:
+                                    print(f"Error sending input: {send_result['error']}", file=sys.stderr)
+                    except queue.Empty:
+                        pass
+
+                    # Small delay to prevent busy waiting
+                    time.sleep(0.01)
+
+            except KeyboardInterrupt:
+                print("\nRaySSH: 🛑 Interactive session interrupted")
+
+            finally:
+                # Clean up the session
+                self.current_interactive_session = None
+                try:
+                    ray.get(self.shell_actor.terminate_interactive_command.remote(session_id))
+                except Exception:
+                    pass
+                print("RaySSH: ✅ Interactive session ended")
+
+            return True
+
+        except Exception as e:
+            print(f"Error in interactive session: {e}", file=sys.stderr)
+            return True
+
     def execute_command(self, command: str) -> bool:
         """
         Execute a command on the remote shell.
@@ -325,6 +475,10 @@ class RaySSHClient:
         # Check for vim command
         if command.strip().startswith('vim '):
             return self._handle_vim_command(command)
+
+        # Check if this is an interactive command
+        if self._is_interactive_command(command):
+            return self._handle_interactive_command(command)
 
         try:
             # Execute command asynchronously so we can handle signals
@@ -531,6 +685,7 @@ def print_help():
 - 📁 Most standard shell commands work (ls, cat, grep, etc.)
 - 🏠 Built-in commands: cd, pwd, export, pushd, popd, dirs
 - ✏️  vim <file> - Edit remote files locally with vim (transfers file, opens vim, syncs changes back)
+- 🔄 Interactive programs (python, node, mysql, etc.) - Full stdin support for interactive sessions
 - ⭐ Tab completion for file names (press Tab to autocomplete)
 - ⚡ Ctrl-C interrupts the current command
 - 🚪 Ctrl-D or 'exit' or 'quit' to disconnect

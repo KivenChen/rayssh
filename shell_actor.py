@@ -1,7 +1,8 @@
 import os
-import signal
+import pty
 import subprocess
 import threading
+import uuid
 from typing import Dict, Optional
 
 import ray
@@ -22,6 +23,7 @@ class ShellActor:
         self.running_process = None
         self.process_lock = threading.Lock()
         self.dir_stack = []  # Directory stack for pushd/popd
+        self.interactive_processes = {}  # session_id -> process info
 
     def get_node_info(self) -> Dict:
         """Get information about the current node."""
@@ -267,8 +269,8 @@ class ShellActor:
     def _execute_external_command(self, command: str, timeout: Optional[float] = None) -> Dict:
         """Execute an external shell command."""
         try:
+            # Start the process (acquire lock only for process creation)
             with self.process_lock:
-                # Start the process
                 self.running_process = subprocess.Popen(
                     command,
                     shell=True,
@@ -279,21 +281,26 @@ class ShellActor:
                     env=self.env,
                     preexec_fn=os.setsid  # Create new process group for signal handling
                 )
+                # Store process reference for interrupt handling
+                current_process = self.running_process
 
-                try:
-                    # Wait for completion with timeout
-                    stdout, stderr = self.running_process.communicate(timeout=timeout)
-                    returncode = self.running_process.returncode
+            try:
+                # Wait for completion with timeout (without holding lock)
+                stdout, stderr = current_process.communicate(timeout=timeout)
+                returncode = current_process.returncode
 
-                except subprocess.TimeoutExpired:
-                    # Kill the process group on timeout
-                    os.killpg(os.getpgid(self.running_process.pid), signal.SIGTERM)
-                    stdout, stderr = self.running_process.communicate()
-                    returncode = -15  # SIGTERM
-                    stderr += f"\nCommand timed out after {timeout} seconds\n"
+            except subprocess.TimeoutExpired:
+                # Kill the process group on timeout
+                os.killpg(os.getpgid(current_process.pid), 15)  # SIGTERM = 15
+                stdout, stderr = current_process.communicate()
+                returncode = -15  # SIGTERM
+                stderr += f"\nCommand timed out after {timeout} seconds\n"
 
-                finally:
-                    self.running_process = None
+            finally:
+                # Clear the running process reference
+                with self.process_lock:
+                    if self.running_process == current_process:
+                        self.running_process = None
 
             return {
                 'stdout': stdout,
@@ -321,11 +328,16 @@ class ShellActor:
             if self.running_process and self.running_process.poll() is None:
                 try:
                     # Send SIGINT to the process group
-                    os.killpg(os.getpgid(self.running_process.pid), signal.SIGINT)
+                    pid = self.running_process.pid
+                    pgid = os.getpgid(pid)
+                    os.killpg(pgid, 2)  # SIGINT = 2
                     return True
-                except (ProcessLookupError, OSError):
-                    # Process already terminated
-                    pass
+                except (ProcessLookupError, OSError) as e:
+                    # Process already terminated or other error
+                    print(f"Warning: Could not interrupt process: {e}")
+                except Exception as e:
+                    # Catch any other exception
+                    print(f"Error interrupting command: {e}")
         return False
 
     def suspend_current_command(self) -> bool:
@@ -339,7 +351,7 @@ class ShellActor:
             if self.running_process and self.running_process.poll() is None:
                 try:
                     # Send SIGTSTP to the process group
-                    os.killpg(os.getpgid(self.running_process.pid), signal.SIGTSTP)
+                    os.killpg(os.getpgid(self.running_process.pid), 20)  # SIGTSTP = 20
                     return True
                 except (ProcessLookupError, OSError):
                     # Process already terminated
@@ -502,12 +514,260 @@ class ShellActor:
                 'error': f"Error writing file: {str(e)}"
             }
 
+    def start_interactive_command(self, command: str) -> Dict:
+        """
+        Start an interactive command that may need stdin.
+
+        Returns:
+            Dict with 'success', 'session_id', 'error' keys
+        """
+        try:
+            session_id = str(uuid.uuid4())
+
+            # Use pty for better terminal emulation
+            # Set environment variables for unbuffered output
+            env = self.env.copy()
+            env['PYTHONUNBUFFERED'] = '1'
+            env['TERM'] = 'dumb'  # Simple terminal type
+            
+            # Create a pseudo-terminal
+            master_fd, slave_fd = pty.openpty()
+            
+            process = subprocess.Popen(
+                command,
+                shell=True,
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                text=False,  # Use bytes mode for pty
+                cwd=self.cwd,
+                env=env,
+                preexec_fn=os.setsid,
+                close_fds=True
+            )
+            
+            # Close slave fd in parent process
+            os.close(slave_fd)
+
+            # Store process info
+            self.interactive_processes[session_id] = {
+                'process': process,
+                'command': command,
+                'master_fd': master_fd  # Store the pty master fd
+            }
+
+            return {
+                'success': True,
+                'session_id': session_id,
+                'error': None
+            }
+
+        except Exception as e:
+            return {
+                'success': False,
+                'session_id': None,
+                'error': f"Failed to start interactive command: {str(e)}"
+            }
+
+    def send_stdin_data(self, session_id: str, data: str) -> Dict:
+        """
+        Send data to the stdin of an interactive process.
+
+        Returns:
+            Dict with 'success', 'error' keys
+        """
+        try:
+            if session_id not in self.interactive_processes:
+                return {
+                    'success': False,
+                    'error': f"No interactive session found: {session_id}"
+                }
+
+            process = self.interactive_processes[session_id]['process']
+            master_fd = self.interactive_processes[session_id]['master_fd']
+
+            # Check if process is still running
+            if process.poll() is not None:
+                return {
+                    'success': False,
+                    'error': "Process has already terminated"
+                }
+
+            # Send data to pty master
+            os.write(master_fd, data.encode('utf-8'))
+
+            return {
+                'success': True,
+                'error': None
+            }
+
+        except BrokenPipeError:
+            return {
+                'success': False,
+                'error': "Process stdin closed (process may have terminated)"
+            }
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f"Error sending stdin data: {str(e)}"
+            }
+
+    def read_output_chunk(self, session_id: str, timeout: float = 0.1) -> Dict:
+        """
+        Read available output from an interactive process (non-blocking).
+
+        Returns:
+            Dict with 'success', 'stdout', 'stderr', 'finished', 'returncode' keys
+        """
+        try:
+            if session_id not in self.interactive_processes:
+                return {
+                    'success': False,
+                    'stdout': '',
+                    'stderr': '',
+                    'finished': True,
+                    'returncode': None,
+                    'error': f"No interactive session found: {session_id}"
+                }
+
+            process = self.interactive_processes[session_id]['process']
+            master_fd = self.interactive_processes[session_id]['master_fd']
+
+            # Check if process finished
+            returncode = process.poll()
+            finished = returncode is not None
+
+            stdout_data = ""
+            stderr_data = ""
+
+            # Read from pty master (combines stdout and stderr)
+            try:
+                import select
+                import fcntl
+                
+                # Set non-blocking mode on master fd
+                flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
+                fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+                
+                # Use select to check if data is available
+                ready, _, _ = select.select([master_fd], [], [], timeout)
+                if ready:
+                    try:
+                        chunk = os.read(master_fd, 4096)
+                        if chunk:
+                            # PTY combines stdout/stderr, put it all in stdout
+                            stdout_data = chunk.decode('utf-8', errors='replace')
+                    except (BlockingIOError, OSError):
+                        # No data available or pty closed
+                        pass
+            except (ImportError, OSError):
+                # Fallback - try to read if process finished
+                if finished:
+                    try:
+                        chunk = os.read(master_fd, 4096)
+                        stdout_data = chunk.decode('utf-8', errors='replace')
+                    except:
+                        pass
+
+            return {
+                'success': True,
+                'stdout': stdout_data,
+                'stderr': stderr_data,
+                'finished': finished,
+                'returncode': returncode,
+                'error': None
+            }
+
+        except Exception as e:
+            return {
+                'success': False,
+                'stdout': '',
+                'stderr': '',
+                'finished': True,
+                'returncode': None,
+                'error': f"Error reading output: {str(e)}"
+            }
+
+    def terminate_interactive_command(self, session_id: str) -> Dict:
+        """
+        Terminate an interactive command and clean up resources.
+
+        Returns:
+            Dict with 'success', 'returncode', 'error' keys
+        """
+        try:
+            if session_id not in self.interactive_processes:
+                return {
+                    'success': True,  # Already cleaned up
+                    'returncode': None,
+                    'error': None
+                }
+
+            process = self.interactive_processes[session_id]['process']
+
+            # Get final returncode
+            returncode = process.poll()
+
+            # If process is still running, terminate it
+            if returncode is None:
+                try:
+                    # Try graceful termination first
+                    os.killpg(os.getpgid(process.pid), 15)  # SIGTERM = 15
+                    process.wait(timeout=5)
+                    returncode = process.returncode
+                except (ProcessLookupError, subprocess.TimeoutExpired):
+                    # Force kill if graceful termination fails
+                    try:
+                        os.killpg(os.getpgid(process.pid), 9)  # SIGKILL = 9
+                        process.wait(timeout=2)
+                        returncode = process.returncode
+                    except Exception:
+                        returncode = -9  # SIGKILL
+
+            # Clean up pty
+            master_fd = self.interactive_processes[session_id]['master_fd']
+            try:
+                os.close(master_fd)
+            except Exception:
+                pass
+
+            # Remove from active sessions
+            del self.interactive_processes[session_id]
+
+            return {
+                'success': True,
+                'returncode': returncode,
+                'error': None
+            }
+
+        except Exception as e:
+            # Still try to clean up
+            try:
+                if session_id in self.interactive_processes:
+                    del self.interactive_processes[session_id]
+            except Exception:
+                pass
+
+            return {
+                'success': False,
+                'returncode': None,
+                'error': f"Error terminating process: {str(e)}"
+            }
+
     def cleanup(self) -> None:
         """Clean up any running processes before actor termination."""
+        # Clean up regular running process
         with self.process_lock:
             if self.running_process and self.running_process.poll() is None:
                 try:
-                    os.killpg(os.getpgid(self.running_process.pid), signal.SIGTERM)
+                    os.killpg(os.getpgid(self.running_process.pid), 15)  # SIGTERM = 15
                     self.running_process.wait(timeout=5)
                 except (ProcessLookupError, OSError, subprocess.TimeoutExpired):
                     pass
+
+        # Clean up all interactive processes
+        for session_id in list(self.interactive_processes.keys()):
+            try:
+                self.terminate_interactive_command(session_id)
+            except Exception:
+                pass
