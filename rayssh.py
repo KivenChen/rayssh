@@ -569,6 +569,74 @@ class RaySSHClient:
                 pass
 
 
+def get_ordered_nodes():
+    """
+    Get Ray nodes in the same order as displayed in --ls table.
+    Returns (nodes, head_node_index) where nodes is list of alive nodes
+    and head_node_index is the index of the head node.
+    """
+    # Ensure Ray is initialized
+    ensure_ray_initialized()
+    
+    # Get all nodes in the cluster
+    all_nodes = get_ray_cluster_nodes()
+    
+    if not all_nodes:
+        return [], -1
+        
+    # Filter to only show alive nodes
+    nodes = [node for node in all_nodes if node.get('Alive', False)]
+    
+    if not nodes:
+        return [], -1
+    
+    # Detect head node (same logic as print_nodes_table)
+    head_node_id = None
+    head_node_index = -1
+    
+    for i, node in enumerate(nodes):
+        resources = node.get('Resources', {})
+        # Head node typically has 'node:' resources or is the first node
+        if any(key.startswith('node:') for key in resources.keys()) or head_node_id is None:
+            head_node_id = node.get('NodeID')
+            head_node_index = i
+            break
+    
+    return nodes, head_node_index
+
+def get_node_by_index(index: int):
+    """
+    Get a node by its index in the --ls table.
+    -0 = head node, -1 = first non-head node, etc.
+    
+    Returns the node dict or raises ValueError if index is invalid.
+    """
+    nodes, head_node_index = get_ordered_nodes()
+    
+    if not nodes:
+        raise ValueError("No alive Ray nodes found in the cluster")
+    
+    if index == 0:
+        # -0 means head node
+        if head_node_index >= 0:
+            return nodes[head_node_index]
+        else:
+            raise ValueError("No head node found")
+    
+    # For non-head nodes, create a list excluding the head node
+    non_head_nodes = []
+    for i, node in enumerate(nodes):
+        if i != head_node_index:
+            non_head_nodes.append(node)
+    
+    # -1 = first non-head, -2 = second non-head, etc.
+    non_head_index = index - 1
+    
+    if non_head_index < 0 or non_head_index >= len(non_head_nodes):
+        raise ValueError(f"Node index -{index} is out of range. Available: -0 to -{len(non_head_nodes)}")
+    
+    return non_head_nodes[non_head_index]
+
 def print_nodes_table():
     """Print a table of available Ray nodes."""
     try:
@@ -645,8 +713,8 @@ def print_nodes_table():
                 print(f"{'':12} {'└─':16} {', '.join(special_resources)}")
 
         print("=" * 85)
-        print("💡 Use: rayssh <ip_address> or rayssh <node_id_prefix> to connect")
-        print("👑 Head node is marked with crown")
+        print("💡 Use: rayssh <ip_address> or rayssh <node_id_prefix> or rayssh -<index> to connect")
+        print("👑 Head node is -0, first non-head is -1, second non-head is -2, etc.")
 
     except Exception as e:
         print(f"❌ Error listing nodes: {e}", file=sys.stderr)
@@ -661,12 +729,13 @@ def print_help():
 🚀 RaySSH: Command a Ray node like a shell
 
 📋 Usage:
-    rayssh <node_ip_address | node_id> [options]
+    rayssh <node_ip_address | node_id | -index> [options]
     rayssh --list | --ls | --show
 
 📝 Arguments:
     🌍 node_ip_address    IP address of the target Ray node (format: xxx.yyy.zzz.aaa)
     🆔 node_id           Ray node ID or prefix (hexadecimal string, minimum 6 characters)
+    🔢 -index            Connect to node by index from --ls table (-0=head, -1=first non-head, etc.)
 
 ⚙️  Options:
     ❓ --help, -h        Show this help message and exit
@@ -677,6 +746,9 @@ def print_help():
      rayssh 192.168.1.100           # Connect to node by IP
      rayssh a1b2c3d4e5f6            # Connect to node by ID prefix (min 6 chars)
      rayssh a1b2c3d4e5f67890abcdef   # Connect to node by full ID
+     rayssh -0                      # Connect to head node
+     rayssh -1                      # Connect to first non-head node
+     rayssh -2                      # Connect to second non-head node
      rayssh --list                  # List all available nodes
      rayssh --ls                    # List all available nodes (alias)
      rayssh --show                  # List all available nodes (alias)
@@ -723,6 +795,22 @@ def main():
         return 1
 
     node_arg = sys.argv[1]
+
+    # Handle node index argument (-0, -1, -2, etc.)
+    if node_arg.startswith('-') and node_arg[1:].isdigit():
+        try:
+            index = int(node_arg[1:])  # Extract number after '-'
+            node = get_node_by_index(index)
+            # Use the node's IP address as the connection target
+            node_arg = node.get('NodeManagerAddress')
+            print(f"Connecting to node -{index}: {node_arg}")
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            print("Use 'rayssh --ls' to see available nodes", file=sys.stderr)
+            return 1
+        except Exception as e:
+            print(f"Error getting node by index: {e}", file=sys.stderr)
+            return 1
 
     # Create and run the client
     client = RaySSHClient(node_arg)
