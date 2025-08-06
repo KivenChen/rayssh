@@ -412,7 +412,7 @@ def print_help():
 
 📋 Usage:
     rayssh <node_ip_address | node_id> [options]
-    rayssh --list | -l
+    rayssh --list | --ls | --show
 
 📝 Arguments:
     🌍 node_ip_address    IP address of the target Ray node (format: xxx.yyy.zzz.aaa)
@@ -420,14 +420,16 @@ def print_help():
 
 ⚙️  Options:
     ❓ --help, -h        Show this help message and exit
-    📊 --list, -l        List all available Ray nodes in a table format
+    📊 --list, --ls, --show
+                      List all available Ray nodes in a table format
 
 💡 Examples:
      rayssh 192.168.1.100           # Connect to node by IP
      rayssh a1b2c3d4e5f6            # Connect to node by ID prefix (min 6 chars)
      rayssh a1b2c3d4e5f67890abcdef   # Connect to node by full ID
      rayssh --list                  # List all available nodes
-     rayssh -l                      # List all available nodes (short alias)
+     rayssh --ls                    # List all available nodes (alias)
+     rayssh --show                  # List all available nodes (alias)
 
 🖥️  Once connected, you can use the remote shell just like a regular shell:
 - 📁 Most standard shell commands work (ls, cat, grep, etc.)
@@ -456,9 +458,9 @@ def main():
         return 0
 
     # Handle list nodes command
-    if sys.argv[1] in ['--list', '-l']:
+    if sys.argv[1] in ['--list', '--ls', '--show']:
         if len(sys.argv) != 2:
-            print("Error: --list and -l options do not accept additional arguments", file=sys.stderr)
+            print("Error: --list, --ls, and --show options do not accept additional arguments", file=sys.stderr)
             return 1
         return print_nodes_table()
 
