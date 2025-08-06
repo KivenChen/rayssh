@@ -39,7 +39,7 @@ def get_ray_cluster_nodes() -> List[Dict]:
     try:
         return ray.nodes()
     except Exception as e:
-        raise RuntimeError(f"Failed to get Ray cluster nodes: {e}")
+        raise RuntimeError(f"Failed to get Ray cluster nodes: {e}") from e
 
 
 def find_node_by_ip(target_ip: str) -> Optional[Dict]:
@@ -117,7 +117,7 @@ def ensure_ray_initialized():
                 ignore_reinit_error=True # Ignore reinitialization errors
             )
         except Exception as e:
-            raise RuntimeError(f"Failed to initialize Ray: {e}")
+            raise RuntimeError(f"Failed to initialize Ray: {e}") from e
 
 
 def get_node_resources(node_info: Dict) -> Dict:

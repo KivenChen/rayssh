@@ -35,11 +35,11 @@ class ShellActor:
     def execute_command(self, command: str, timeout: Optional[float] = None) -> Dict:
         """
         Execute a shell command and return the result.
-        
+
         Args:
             command: The shell command to execute
             timeout: Optional timeout in seconds
-            
+
         Returns:
             Dict with 'stdout', 'stderr', 'returncode', 'cwd' keys
         """
@@ -313,7 +313,7 @@ class ShellActor:
     def interrupt_current_command(self) -> bool:
         """
         Interrupt the currently running command (equivalent to Ctrl-C).
-        
+
         Returns:
             True if a command was interrupted, False otherwise
         """
@@ -331,7 +331,7 @@ class ShellActor:
     def suspend_current_command(self) -> bool:
         """
         Suspend the currently running command (equivalent to Ctrl-Z).
-        
+
         Returns:
             True if a command was suspended, False otherwise
         """
@@ -353,7 +353,7 @@ class ShellActor:
     def set_current_directory(self, path: str) -> bool:
         """
         Set the current working directory.
-        
+
         Returns:
             True if successful, False otherwise
         """
@@ -377,6 +377,130 @@ class ShellActor:
     def list_environment_variables(self) -> Dict[str, str]:
         """Get all environment variables."""
         return self.env.copy()
+
+    def read_file(self, file_path: str) -> Dict:
+        """
+        Read a file from the remote filesystem and return its contents.
+        Limits file size to 1MB for safety.
+
+        Args:
+            file_path: Path to the file to read
+
+        Returns:
+            Dict with 'success', 'content', 'error', 'size' keys
+        """
+        try:
+            # Convert relative path to absolute
+            if not os.path.isabs(file_path):
+                file_path = os.path.join(self.cwd, file_path)
+
+            file_path = os.path.normpath(file_path)
+
+            # Check if file exists
+            if not os.path.exists(file_path):
+                return {
+                    'success': False,
+                    'content': None,
+                    'error': f"File not found: {file_path}",
+                    'size': 0
+                }
+
+            # Check if it's a file (not a directory)
+            if not os.path.isfile(file_path):
+                return {
+                    'success': False,
+                    'content': None,
+                    'error': f"Path is not a file: {file_path}",
+                    'size': 0
+                }
+
+            # Check file size (limit to 1MB)
+            file_size = os.path.getsize(file_path)
+            max_size = 1024 * 1024  # 1MB
+
+            if file_size > max_size:
+                return {
+                    'success': False,
+                    'content': None,
+                    'error': f"File too large: {file_size} bytes (max {max_size} bytes)",
+                    'size': file_size
+                }
+
+            # Read the file
+            with open(file_path, encoding='utf-8', errors='replace') as f:
+                content = f.read()
+
+            return {
+                'success': True,
+                'content': content,
+                'error': None,
+                'size': file_size
+            }
+
+        except UnicodeDecodeError:
+            return {
+                'success': False,
+                'content': None,
+                'error': f"File contains binary data or unsupported encoding: {file_path}",
+                'size': 0
+            }
+        except PermissionError:
+            return {
+                'success': False,
+                'content': None,
+                'error': f"Permission denied: {file_path}",
+                'size': 0
+            }
+        except Exception as e:
+            return {
+                'success': False,
+                'content': None,
+                'error': f"Error reading file: {str(e)}",
+                'size': 0
+            }
+
+    def write_file(self, file_path: str, content: str) -> Dict:
+        """
+        Write content to a file on the remote filesystem.
+
+        Args:
+            file_path: Path to the file to write
+            content: Content to write to the file
+
+        Returns:
+            Dict with 'success', 'error' keys
+        """
+        try:
+            # Convert relative path to absolute
+            if not os.path.isabs(file_path):
+                file_path = os.path.join(self.cwd, file_path)
+
+            file_path = os.path.normpath(file_path)
+
+            # Create directory if it doesn't exist
+            dir_path = os.path.dirname(file_path)
+            if dir_path and not os.path.exists(dir_path):
+                os.makedirs(dir_path, exist_ok=True)
+
+            # Write the file
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+
+            return {
+                'success': True,
+                'error': None
+            }
+
+        except PermissionError:
+            return {
+                'success': False,
+                'error': f"Permission denied: {file_path}"
+            }
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f"Error writing file: {str(e)}"
+            }
 
     def cleanup(self) -> None:
         """Clean up any running processes before actor termination."""

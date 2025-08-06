@@ -3,7 +3,9 @@
 import atexit
 import os
 import signal
+import subprocess
 import sys
+import tempfile
 import threading
 
 import ray
@@ -220,15 +222,109 @@ class RaySSHClient:
 
         return filtered_text
 
+    def _handle_vim_command(self, command: str) -> bool:
+        """
+        Handle vim command by transferring file, opening vim locally, then syncing back.
+
+        Returns:
+            True to continue, False to exit
+        """
+        # Parse vim command to extract filename
+        parts = command.strip().split()
+        if len(parts) < 2:
+            print("vim: missing filename", file=sys.stderr)
+            return True
+
+        filename = parts[1]
+
+        try:
+            # Read file from remote
+            print(f"RaySSH: 📥 Transferring file from remote: {filename}")
+            file_result = ray.get(self.shell_actor.read_file.remote(filename))
+
+            if not file_result['success']:
+                # File doesn't exist, create empty content for new file
+                if "File not found" in file_result['error']:
+                    content = ""
+                    print(f"RaySSH: ✨ Creating new file: {filename}")
+                else:
+                    print(f"Error: {file_result['error']}", file=sys.stderr)
+                    return True
+            else:
+                content = file_result['content']
+                size_kb = file_result['size'] / 1024
+                print(f"RaySSH: ✅ File transferred ({size_kb:.1f} KB)")
+
+            # Create temporary file
+            with tempfile.NamedTemporaryFile(mode='w', suffix=os.path.splitext(filename)[1], delete=False, encoding='utf-8') as temp_file:
+                temp_file.write(content)
+                temp_path = temp_file.name
+
+            try:
+                # Get original modification time
+                original_mtime = os.path.getmtime(temp_path)
+
+                # Launch vim with the temp file
+                print("RaySSH: ✏️  Opening vim...")
+                vim_process = subprocess.run(['vim', temp_path])
+
+                # Check if vim exited successfully
+                if vim_process.returncode != 0:
+                    print(f"vim exited with code {vim_process.returncode}", file=sys.stderr)
+                    return True
+
+                # Check if file was modified
+                new_mtime = os.path.getmtime(temp_path)
+                if new_mtime == original_mtime:
+                    print("RaySSH: ℹ️  No changes made")
+                    return True
+
+                # Read the modified content
+                with open(temp_path, encoding='utf-8') as f:
+                    modified_content = f.read()
+
+                # Write back to remote
+                print(f"RaySSH: 📤 Syncing changes to remote: {filename}")
+                write_result = ray.get(self.shell_actor.write_file.remote(filename, modified_content))
+
+                if write_result['success']:
+                    print("RaySSH: 🎉 File synchronized successfully")
+                else:
+                    print(f"Error writing to remote: {write_result['error']}", file=sys.stderr)
+                    return True
+
+            finally:
+                # Clean up temp file
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
+
+            return True
+
+        except KeyboardInterrupt:
+            print("\nVim session interrupted")
+            return True
+        except FileNotFoundError:
+            print("Error: vim not found. Please install vim on your local system.", file=sys.stderr)
+            return True
+        except Exception as e:
+            print(f"Error in vim session: {e}", file=sys.stderr)
+            return True
+
     def execute_command(self, command: str) -> bool:
         """
         Execute a command on the remote shell.
-        
+
         Returns:
             True to continue, False to exit
         """
         if command.strip().lower() in ['exit', 'quit']:
             return False
+
+        # Check for vim command
+        if command.strip().startswith('vim '):
+            return self._handle_vim_command(command)
 
         try:
             # Execute command asynchronously so we can handle signals
@@ -434,6 +530,7 @@ def print_help():
 🖥️  Once connected, you can use the remote shell just like a regular shell:
 - 📁 Most standard shell commands work (ls, cat, grep, etc.)
 - 🏠 Built-in commands: cd, pwd, export, pushd, popd, dirs
+- ✏️  vim <file> - Edit remote files locally with vim (transfers file, opens vim, syncs changes back)
 - ⭐ Tab completion for file names (press Tab to autocomplete)
 - ⚡ Ctrl-C interrupts the current command
 - 🚪 Ctrl-D or 'exit' or 'quit' to disconnect
