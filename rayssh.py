@@ -403,16 +403,44 @@ class RaySSHClient:
                 input_queue = queue.Queue()
 
                 def input_reader():
-                    """Read input from stdin in separate thread"""
-                    while self.current_interactive_session == session_id:
-                        try:
-                            line = input()  # Blocking read for user input
-                            input_queue.put(line + '\n')
-                        except (EOFError, KeyboardInterrupt):
-                            input_queue.put(None)  # Signal end
-                            break
-                        except Exception:
-                            break
+                    """Read input from stdin in separate thread with no local echo"""
+                    # Set up terminal for raw input (no echo)
+                    fd = sys.stdin.fileno()
+                    old_settings = termios.tcgetattr(fd)
+                    try:
+                        # Set raw mode but keep some basic terminal features
+                        new_settings = termios.tcgetattr(fd)
+                        new_settings[3] &= ~(termios.ECHO | termios.ICANON)  # Disable echo and canonical mode
+                        new_settings[6][termios.VMIN] = 1  # Minimum characters to read
+                        new_settings[6][termios.VTIME] = 0  # Timeout
+                        termios.tcsetattr(fd, termios.TCSADRAIN, new_settings)
+                        
+                        while self.current_interactive_session == session_id:
+                            try:
+                                char = sys.stdin.read(1)
+                                if not char:
+                                    break
+                                
+                                # Send each character immediately to let remote PTY handle echoing
+                                if char == '\x03':  # Ctrl-C
+                                    input_queue.put(None)
+                                    break
+                                elif char == '\x04':  # Ctrl-D (EOF)
+                                    input_queue.put(None)
+                                    break
+                                else:
+                                    # Send character immediately (including Enter, Backspace, etc.)
+                                    input_queue.put(char)
+                                    
+                            except (EOFError, KeyboardInterrupt):
+                                input_queue.put(None)
+                                break
+                            except Exception:
+                                break
+                                
+                    finally:
+                        # Restore terminal settings
+                        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
                 # Start input reader thread
                 input_thread = threading.Thread(target=input_reader, daemon=True)
@@ -752,60 +780,30 @@ def print_nodes_table():
 def print_help():
     """Print help information."""
     help_text = """
-🚀 RaySSH: Command a Ray node like a shell
+RaySSH: Command Ray nodes like a shell or submit jobs
 
-📋 Usage:
-    rayssh                                        # Interactive node selection
-    rayssh <node_ip_address | node_id | -index> [options]
-    rayssh --list | --ls | --show
-    rayssh [-q] <file>                           # Experimental: Submit file as Ray job
+Usage:
+    rayssh                          # Interactive node selection
+    rayssh <ip|node_id|-index>      # Connect to specific node
+    rayssh --list                   # List available nodes
+    rayssh [-q] <file>              # Submit file as Ray job (experimental)
 
-📝 Arguments:
-    🌍 node_ip_address    IP address of the target Ray node (format: xxx.yyy.zzz.aaa)
-    🆔 node_id           Ray node ID or prefix (hexadecimal string, minimum 6 characters)
-    🔢 -index            Connect to node by index from --ls table (-0=head, -1=first non-head, etc.)
-    📄 file              File to submit as Ray job (experimental, .py/.sh/.bash only)
+Options:
+    -h, --help                      # Show help
+    -l, --list, --ls, --show        # List nodes
+    -q                              # Quick mode (no-wait for jobs)
 
-⚙️  Options:
-    ❓ --help, -h        Show this help message and exit
-    📊 --list, --ls, --show
-                      List all available Ray nodes in a table format
-    🏃 -q               Quick mode: don't wait for job completion (use with file submission)
+Examples:
+    rayssh                          # Interactive menu
+    rayssh 192.168.1.100            # Connect by IP
+    rayssh -0                       # Connect to head node
+    rayssh -1                       # Connect to first worker
+    rayssh -l                       # Show all nodes
+    rayssh script.py                # Submit Python job (tails log)
+    rayssh -q train.sh              # Submit bash job (no-wait, view log at Ray Dashboard)
 
-💡 Examples:
-     rayssh                         # Interactive node selection (numbered menu)
-     rayssh 192.168.1.100           # Connect to node by IP
-     rayssh a1b2c3d4e5f6            # Connect to node by ID prefix (min 6 chars)
-     rayssh a1b2c3d4e5f67890abcdef   # Connect to node by full ID
-     rayssh -0                      # Connect to head node
-     rayssh -1                      # Connect to first non-head node
-     rayssh -2                      # Connect to second non-head node
-     rayssh --list                  # List all available nodes
-     rayssh --ls                    # List all available nodes (alias)
-     rayssh --show                  # List all available nodes (alias)
-     rayssh script.py               # Submit Python script as Ray job (experimental)
-     rayssh -q script.py            # Submit Python script without waiting (experimental)
-     rayssh train.sh                # Submit bash script as Ray job (experimental)
-
-🖥️  Once connected, you can use the remote shell just like a regular shell:
-- 📁 Most standard shell commands work (ls, cat, grep, etc.)
-- 🏠 Built-in commands: cd, pwd, export, pushd, popd, dirs
-- ✏️  vim <file> - Edit remote files locally with vim (transfers file, opens vim, syncs changes back)
-- 🔄 Interactive programs (python, node, mysql, etc.) - Full stdin support for interactive sessions
-- ⭐ Tab completion for file names (press Tab to autocomplete)
-- ⚡ Ctrl-C interrupts the current command
-- 🚪 Ctrl-D or 'exit' or 'quit' to disconnect
-- 💾 Working directory and environment variables are maintained across commands
-
-🧪 Experimental Job Submission (rayssh <file>):
-- Only supports Python (.py) and Bash (.sh/.bash) files
-- Files must be within current working directory (--working-dir='.')
-- Uses ray job submit with --entrypoint-num-cpus=1
-- Binary files are not supported
-- Use -q flag for --no-wait behavior
-
-⚠️  Note: This is not a full shell implementation. Complex features like pipes,
-redirections, job control, and interactive programs may not work as expected.
+🖥️ Shell features: vim remote files, tab completion, Ctrl-C interrupts, interactive programs
+🚀 Job submission: Python/Bash files, working-dir='.', entrypoint-num-cpus=1
 """
     print(help_text.strip())
 
@@ -1031,9 +1029,9 @@ def main():
             return 0
 
         # Handle list nodes command
-        if sys.argv[1] in ['--list', '--ls', '--show']:
+        if sys.argv[1] in ['--list', '--ls', '--show', '-l']:
             if len(sys.argv) != 2:
-                print("Error: --list, --ls, and --show options do not accept additional arguments", file=sys.stderr)
+                print("Error: --list, --ls, --show, and -l options do not accept additional arguments", file=sys.stderr)
                 return 1
             return print_nodes_table()
 
@@ -1067,8 +1065,9 @@ def main():
 
         # Handle node connection
         if len(sys.argv) != 2:
-            print("Error: Invalid number of arguments", file=sys.stderr)
-            print("Use 'rayssh --help' for usage information", file=sys.stderr)
+            print("Error: Invalid arguments", file=sys.stderr)
+            print("Usage: rayssh <node|file> or rayssh -q <file>", file=sys.stderr)
+            print("Use 'rayssh --help' for more information", file=sys.stderr)
             return 1
 
         node_arg = sys.argv[1]

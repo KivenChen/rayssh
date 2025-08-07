@@ -31,7 +31,7 @@ def parse_node_argument(node_arg: str) -> tuple[str, str]:
     elif is_valid_node_id(node_arg):
         return ('node_id', node_arg)
     else:
-        raise ValueError(f"Invalid node argument: {node_arg}. Must be a valid IP address or node ID.")
+        raise ValueError(f"Invalid node argument: {node_arg}. \nUsage: rayssh <node|file> or rayssh -q <file>")
 
 
 def get_ray_cluster_nodes() -> List[Dict]:
