@@ -758,16 +758,19 @@ def print_help():
     rayssh                                        # Interactive node selection
     rayssh <node_ip_address | node_id | -index> [options]
     rayssh --list | --ls | --show
+    rayssh [-q] <file>                           # Experimental: Submit file as Ray job
 
 📝 Arguments:
     🌍 node_ip_address    IP address of the target Ray node (format: xxx.yyy.zzz.aaa)
     🆔 node_id           Ray node ID or prefix (hexadecimal string, minimum 6 characters)
     🔢 -index            Connect to node by index from --ls table (-0=head, -1=first non-head, etc.)
+    📄 file              File to submit as Ray job (experimental, .py/.sh/.bash only)
 
 ⚙️  Options:
     ❓ --help, -h        Show this help message and exit
     📊 --list, --ls, --show
                       List all available Ray nodes in a table format
+    🏃 -q               Quick mode: don't wait for job completion (use with file submission)
 
 💡 Examples:
      rayssh                         # Interactive node selection (numbered menu)
@@ -780,6 +783,9 @@ def print_help():
      rayssh --list                  # List all available nodes
      rayssh --ls                    # List all available nodes (alias)
      rayssh --show                  # List all available nodes (alias)
+     rayssh script.py               # Submit Python script as Ray job (experimental)
+     rayssh -q script.py            # Submit Python script without waiting (experimental)
+     rayssh train.sh                # Submit bash script as Ray job (experimental)
 
 🖥️  Once connected, you can use the remote shell just like a regular shell:
 - 📁 Most standard shell commands work (ls, cat, grep, etc.)
@@ -790,6 +796,13 @@ def print_help():
 - ⚡ Ctrl-C interrupts the current command
 - 🚪 Ctrl-D or 'exit' or 'quit' to disconnect
 - 💾 Working directory and environment variables are maintained across commands
+
+🧪 Experimental Job Submission (rayssh <file>):
+- Only supports Python (.py) and Bash (.sh/.bash) files
+- Files must be within current working directory (--working-dir='.')
+- Uses ray job submit with --entrypoint-num-cpus=1
+- Binary files are not supported
+- Use -q flag for --no-wait behavior
 
 ⚠️  Note: This is not a full shell implementation. Complex features like pipes,
 redirections, job control, and interactive programs may not work as expected.
@@ -912,6 +925,95 @@ def interactive_node_selector():
         return None
 
 
+def submit_file_job(file_path: str, no_wait: bool = False) -> int:
+    """
+    Submit a file as a Ray job (experimental feature).
+    
+    Args:
+        file_path: Path to the file to execute
+        no_wait: If True, don't wait for job completion
+        
+    Returns:
+        Exit code (0 for success, 1 for error)
+    """
+    try:
+        # Ensure Ray is initialized
+        ensure_ray_initialized()
+        
+        # Validate file path restrictions
+        if not os.path.exists(file_path):
+            print(f"Error: File '{file_path}' not found", file=sys.stderr)
+            return 1
+            
+        # Check if file is within current working directory
+        abs_file_path = os.path.abspath(file_path)
+        abs_cwd = os.path.abspath('.')
+        
+        if not abs_file_path.startswith(abs_cwd):
+            print("Error: File must be within current working directory (experimental restriction)", file=sys.stderr)
+            return 1
+            
+        # Check if it's a text file (not binary)
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                f.read(1024)  # Read first 1KB to check if it's text
+        except UnicodeDecodeError:
+            print("Error: Binary files are not supported (experimental restriction)", file=sys.stderr)
+            return 1
+            
+        # Determine the interpreter based on file extension
+        file_extension = os.path.splitext(file_path)[1].lower()
+        if file_extension == '.py':
+            interpreter = 'python'
+        elif file_extension in ['.sh', '.bash']:
+            interpreter = 'bash'
+        else:
+            # Try to detect shebang
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    first_line = f.readline().strip()
+                    if first_line.startswith('#!'):
+                        if 'python' in first_line:
+                            interpreter = 'python'
+                        elif 'bash' in first_line or 'sh' in first_line:
+                            interpreter = 'bash'
+                        else:
+                            print("Error: Unsupported interpreter in shebang. Only Python and Bash are supported.", file=sys.stderr)
+                            return 1
+                    else:
+                        print("Error: Cannot determine interpreter. Use .py or .sh/.bash extension, or add shebang.", file=sys.stderr)
+                        return 1
+            except Exception as e:
+                print(f"Error reading file: {e}", file=sys.stderr)
+                return 1
+        
+        # Build Ray job submit command
+        cmd = [
+            'ray', 'job', 'submit',
+            '--entrypoint-num-cpus=1',
+            '--working-dir=.',
+            '--'
+        ]
+        
+        if no_wait:
+            cmd.insert(-1, '--no-wait')  # Insert before '--'
+            
+        cmd.extend([interpreter, file_path])
+        
+        print(f"🚀 RaySSH: Submitting {interpreter} job: {file_path}")
+        print(f"📋 Command: {' '.join(cmd)}")
+        print("⚠️  Experimental feature - file execution via Ray job submission")
+        print()
+        
+        # Execute the ray job submit command
+        result = subprocess.run(cmd, cwd='.')
+        return result.returncode
+        
+    except Exception as e:
+        print(f"Error submitting job: {e}", file=sys.stderr)
+        return 1
+
+
 def main():
     """Main entry point for RaySSH."""
     # Parse command line arguments
@@ -934,6 +1036,34 @@ def main():
                 print("Error: --list, --ls, and --show options do not accept additional arguments", file=sys.stderr)
                 return 1
             return print_nodes_table()
+
+        # Handle file job submission (experimental feature)
+        # Check for patterns: rayssh <file> or rayssh -q <file>
+        file_job_submission = False
+        no_wait = False
+        file_path = None
+        
+        if len(sys.argv) == 2:
+            # Pattern: rayssh <file>
+            potential_file = sys.argv[1]
+            # Check if it looks like a file (has extension and exists)
+            if ('.' in potential_file and 
+                os.path.exists(potential_file) and 
+                os.path.isfile(potential_file)):
+                file_job_submission = True
+                file_path = potential_file
+        elif len(sys.argv) == 3 and sys.argv[1] == '-q':
+            # Pattern: rayssh -q <file>
+            potential_file = sys.argv[2]
+            if ('.' in potential_file and 
+                os.path.exists(potential_file) and 
+                os.path.isfile(potential_file)):
+                file_job_submission = True
+                no_wait = True
+                file_path = potential_file
+        
+        if file_job_submission:
+            return submit_file_job(file_path, no_wait)
 
         # Handle node connection
         if len(sys.argv) != 2:
