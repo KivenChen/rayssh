@@ -3,6 +3,7 @@
 import atexit
 import os
 import queue
+import random
 import signal
 import subprocess
 import sys
@@ -691,6 +692,32 @@ def get_node_by_index(index: int):
 
     return non_head_nodes[non_head_index]
 
+
+def get_random_worker_node():
+    """
+    Get a random worker (non-head) node.
+    Returns the node dict or None if no worker nodes are available.
+    Raises ValueError if only head node exists.
+    """
+    nodes, head_node_index = get_ordered_nodes()
+    
+    if not nodes:
+        raise ValueError("No alive Ray nodes found in the cluster")
+    
+    # Create list of worker nodes (non-head nodes)
+    worker_nodes = []
+    for i, node in enumerate(nodes):
+        if i != head_node_index:
+            worker_nodes.append(node)
+    
+    if not worker_nodes:
+        raise ValueError("Only head node available. Use 'rayssh -0' to connect to head node, or 'rayssh -l' to see all nodes.")
+    
+    # Randomly select a worker node
+    selected_node = random.choice(worker_nodes)
+    return selected_node
+
+
 def print_nodes_table():
     """Print a table of available Ray nodes."""
     try:
@@ -769,6 +796,7 @@ def print_nodes_table():
         print("=" * 85)
         print("💡 Use: rayssh <ip_address> or rayssh <node_id_prefix> or rayssh -<index> to connect")
         print("👑 Head node is -0, first non-head is -1, second non-head is -2, etc.")
+        print("🎲 Use 'rayssh' (no args) for random worker, 'rayssh -l' for interactive, 'rayssh --ls' for this table")
 
     except Exception as e:
         print(f"❌ Error listing nodes: {e}", file=sys.stderr)
@@ -783,22 +811,25 @@ def print_help():
 RaySSH: Command Ray nodes like a shell or submit jobs
 
 Usage:
-    rayssh                          # Interactive node selection
+    rayssh                          # Randomly connect to a worker node
     rayssh <ip|node_id|-index>      # Connect to specific node
-    rayssh --list                   # List available nodes
+    rayssh -l                       # Interactive node selection
+    rayssh --ls                     # Print nodes table
     rayssh [-q] <file>              # Submit file as Ray job (experimental)
 
 Options:
     -h, --help                      # Show help
-    -l, --list, --ls, --show        # List nodes
+    -l, --list, --show              # Interactive node selection
+    --ls                            # Print nodes table
     -q                              # Quick mode (no-wait for jobs)
 
 Examples:
-    rayssh                          # Interactive menu
+    rayssh                          # Random worker node connection
     rayssh 192.168.1.100            # Connect by IP
     rayssh -0                       # Connect to head node
     rayssh -1                       # Connect to first worker
-    rayssh -l                       # Show all nodes
+    rayssh -l                       # Interactive node selection
+    rayssh --ls                     # Show nodes table
     rayssh script.py                # Submit Python job (tails log)
     rayssh -q train.sh              # Submit bash job (no-wait, view log at Ray Dashboard)
 
@@ -1016,61 +1047,77 @@ def main():
     """Main entry point for RaySSH."""
     # Parse command line arguments
     if len(sys.argv) < 2:
-        # No arguments - show interactive node selector
-        selected_node_ip = interactive_node_selector()
-        if selected_node_ip is None:
-            print("\nCancelled.")
-            return 0
-        node_arg = selected_node_ip
+        # No arguments - randomly connect to a worker node
+        try:
+            selected_node = get_random_worker_node()
+            node_arg = selected_node.get('NodeManagerAddress')
+            print(f"Randomly connecting to worker node: {node_arg}")
+        except ValueError as e:
+            print(f"Error: {e}")
+            return 1
+        except Exception as e:
+            print(f"Error selecting random worker node: {e}", file=sys.stderr)
+            return 1
     else:
         # Handle help command
         if sys.argv[1] in ['--help', '-h']:
             print_help()
             return 0
 
-        # Handle list nodes command
-        if sys.argv[1] in ['--list', '--ls', '--show', '-l']:
+        # Handle list nodes table command - prints the table
+        if sys.argv[1] in ['--ls']:
             if len(sys.argv) != 2:
-                print("Error: --list, --ls, --show, and -l options do not accept additional arguments", file=sys.stderr)
+                print("Error: --ls option does not accept additional arguments", file=sys.stderr)
                 return 1
             return print_nodes_table()
 
-        # Handle file job submission (experimental feature)
-        # Check for patterns: rayssh <file> or rayssh -q <file>
-        file_job_submission = False
-        no_wait = False
-        file_path = None
-        
-        if len(sys.argv) == 2:
-            # Pattern: rayssh <file>
-            potential_file = sys.argv[1]
-            # Check if it looks like a file (has extension and exists)
-            if ('.' in potential_file and 
-                os.path.exists(potential_file) and 
-                os.path.isfile(potential_file)):
-                file_job_submission = True
-                file_path = potential_file
-        elif len(sys.argv) == 3 and sys.argv[1] == '-q':
-            # Pattern: rayssh -q <file>
-            potential_file = sys.argv[2]
-            if ('.' in potential_file and 
-                os.path.exists(potential_file) and 
-                os.path.isfile(potential_file)):
-                file_job_submission = True
-                no_wait = True
-                file_path = potential_file
-        
-        if file_job_submission:
-            return submit_file_job(file_path, no_wait)
+        # Handle interactive node selector command
+        if sys.argv[1] in ['--list', '--show', '-l']:
+            if len(sys.argv) != 2:
+                print("Error: --list, --show, and -l options do not accept additional arguments", file=sys.stderr)
+                return 1
+            selected_node_ip = interactive_node_selector()
+            if selected_node_ip is None:
+                print("\nCancelled.")
+                return 0
+            node_arg = selected_node_ip
+        else:
+            # Handle file job submission (experimental feature)
+            # Check for patterns: rayssh <file> or rayssh -q <file>
+            file_job_submission = False
+            no_wait = False
+            file_path = None
+            
+            if len(sys.argv) == 2:
+                # Pattern: rayssh <file>
+                potential_file = sys.argv[1]
+                # Check if it looks like a file (has extension and exists)
+                if ('.' in potential_file and 
+                    os.path.exists(potential_file) and 
+                    os.path.isfile(potential_file)):
+                    file_job_submission = True
+                    file_path = potential_file
+            elif len(sys.argv) == 3 and sys.argv[1] == '-q':
+                # Pattern: rayssh -q <file>
+                potential_file = sys.argv[2]
+                if ('.' in potential_file and 
+                    os.path.exists(potential_file) and 
+                    os.path.isfile(potential_file)):
+                    file_job_submission = True
+                    no_wait = True
+                    file_path = potential_file
+            
+            if file_job_submission:
+                return submit_file_job(file_path, no_wait)
 
-        # Handle node connection
-        if len(sys.argv) != 2:
-            print("Error: Invalid arguments", file=sys.stderr)
-            print("Usage: rayssh <node|file> or rayssh -q <file>", file=sys.stderr)
-            print("Use 'rayssh --help' for more information", file=sys.stderr)
-            return 1
+            # Handle node connection
+            if len(sys.argv) != 2:
+                print("Error: Invalid arguments", file=sys.stderr)
+                print("Usage: rayssh <node|file> or rayssh -q <file>", file=sys.stderr)
+                print("Use 'rayssh --help' for more information", file=sys.stderr)
+                return 1
 
-        node_arg = sys.argv[1]
+            node_arg = sys.argv[1]
 
     # Handle node index argument (-0, -1, -2, etc.)
     if node_arg.startswith('-') and node_arg[1:].isdigit():
