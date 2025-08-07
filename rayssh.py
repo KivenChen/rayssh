@@ -273,8 +273,22 @@ class RaySSHClient:
                 size_kb = file_result['size'] / 1024
                 print(f"RaySSH: ✅ File transferred ({size_kb:.1f} KB)")
 
-            # Create temporary file
-            with tempfile.NamedTemporaryFile(mode='w', suffix=os.path.splitext(filename)[1], delete=False, encoding='utf-8') as temp_file:
+            # Create temporary file with descriptive name indicating remote source
+            file_extension = os.path.splitext(filename)[1]
+            base_name = os.path.basename(filename)
+            
+            # Get node info for temp file naming
+            try:
+                node_info = ray.get(self.shell_actor.get_node_info.remote())
+                hostname = node_info['hostname']
+                # Sanitize hostname for filename use
+                safe_hostname = re.sub(r'[^\w\-.]', '_', hostname)
+            except Exception:
+                safe_hostname = "remote"
+            
+            # Create temp file with pattern: rayssh_HOSTNAME_FILENAME_XXXXXX.ext
+            temp_prefix = f"rayssh_{safe_hostname}_{base_name}_"
+            with tempfile.NamedTemporaryFile(mode='w', prefix=temp_prefix, suffix=file_extension, delete=False, encoding='utf-8') as temp_file:
                 temp_file.write(content)
                 temp_path = temp_file.name
 
@@ -283,7 +297,8 @@ class RaySSHClient:
                 original_mtime = os.path.getmtime(temp_path)
 
                 # Launch vim with the temp file
-                print("RaySSH: ✏️  Opening vim...")
+                temp_filename = os.path.basename(temp_path)
+                print(f"RaySSH: ✏️  Opening vim with temp file: {temp_filename}")
                 vim_process = subprocess.run(['vim', temp_path])
 
                 # Check if vim exited successfully
