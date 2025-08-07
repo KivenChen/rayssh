@@ -7,8 +7,10 @@ import signal
 import subprocess
 import sys
 import tempfile
+import termios
 import threading
 import time
+import tty
 
 import ray
 
@@ -364,7 +366,10 @@ class RaySSHClient:
             True to continue, False to exit
         """
         try:
-            print(f"RaySSH: 🔄 Starting interactive session: {command}")
+            print()
+            print("=" * 60)
+            print(f"🔄 RaySSH: Starting interactive session: {command}")
+            print("=" * 60)
 
             # Start the interactive command
             start_result = ray.get(self.shell_actor.start_interactive_command.remote(command))
@@ -375,7 +380,8 @@ class RaySSHClient:
 
             session_id = start_result['session_id']
             self.current_interactive_session = session_id  # Track for Ctrl-C handling
-            print("RaySSH: ⚡ Interactive session started (Ctrl-C to interrupt)")
+            print("⚡ Interactive session started (Ctrl-C to interrupt)")
+            print("-" * 60)
 
             try:
                 # Use threading for concurrent input/output handling
@@ -445,7 +451,10 @@ class RaySSHClient:
                     time.sleep(0.01)
 
             except KeyboardInterrupt:
-                print("\nRaySSH: 🛑 Interactive session interrupted")
+                print()
+                print("-" * 60)
+                print("🛑 RaySSH: Interactive session interrupted")
+                print("-" * 60)
 
             finally:
                 # Clean up the session
@@ -454,7 +463,9 @@ class RaySSHClient:
                     ray.get(self.shell_actor.terminate_interactive_command.remote(session_id))
                 except Exception:
                     pass
-                print("RaySSH: ✅ Interactive session ended")
+                print("-" * 60)
+                print("✅ RaySSH: Interactive session ended")
+                print("=" * 60)
 
             return True
 
@@ -577,23 +588,23 @@ def get_ordered_nodes():
     """
     # Ensure Ray is initialized
     ensure_ray_initialized()
-    
+
     # Get all nodes in the cluster
     all_nodes = get_ray_cluster_nodes()
-    
+
     if not all_nodes:
         return [], -1
-        
+
     # Filter to only show alive nodes
     nodes = [node for node in all_nodes if node.get('Alive', False)]
-    
+
     if not nodes:
         return [], -1
-    
+
     # Detect head node (same logic as print_nodes_table)
     head_node_id = None
     head_node_index = -1
-    
+
     for i, node in enumerate(nodes):
         resources = node.get('Resources', {})
         # Head node typically has 'node:' resources or is the first node
@@ -601,40 +612,40 @@ def get_ordered_nodes():
             head_node_id = node.get('NodeID')
             head_node_index = i
             break
-    
+
     return nodes, head_node_index
 
 def get_node_by_index(index: int):
     """
     Get a node by its index in the --ls table.
     -0 = head node, -1 = first non-head node, etc.
-    
+
     Returns the node dict or raises ValueError if index is invalid.
     """
     nodes, head_node_index = get_ordered_nodes()
-    
+
     if not nodes:
         raise ValueError("No alive Ray nodes found in the cluster")
-    
+
     if index == 0:
         # -0 means head node
         if head_node_index >= 0:
             return nodes[head_node_index]
         else:
             raise ValueError("No head node found")
-    
+
     # For non-head nodes, create a list excluding the head node
     non_head_nodes = []
     for i, node in enumerate(nodes):
         if i != head_node_index:
             non_head_nodes.append(node)
-    
+
     # -1 = first non-head, -2 = second non-head, etc.
     non_head_index = index - 1
-    
+
     if non_head_index < 0 or non_head_index >= len(non_head_nodes):
         raise ValueError(f"Node index -{index} is out of range. Available: -0 to -{len(non_head_nodes)}")
-    
+
     return non_head_nodes[non_head_index]
 
 def print_nodes_table():
@@ -729,6 +740,7 @@ def print_help():
 🚀 RaySSH: Command a Ray node like a shell
 
 📋 Usage:
+    rayssh                                        # Interactive node selection
     rayssh <node_ip_address | node_id | -index> [options]
     rayssh --list | --ls | --show
 
@@ -743,6 +755,7 @@ def print_help():
                       List all available Ray nodes in a table format
 
 💡 Examples:
+     rayssh                         # Interactive node selection (numbered menu)
      rayssh 192.168.1.100           # Connect to node by IP
      rayssh a1b2c3d4e5f6            # Connect to node by ID prefix (min 6 chars)
      rayssh a1b2c3d4e5f67890abcdef   # Connect to node by full ID
@@ -769,32 +782,151 @@ redirections, job control, and interactive programs may not work as expected.
     print(help_text.strip())
 
 
+def interactive_node_selector():
+    """
+    Display an interactive node selection screen with arrow key navigation.
+    Returns the selected node's IP address or None if cancelled.
+    """
+    try:
+        # Get nodes in the same order as --ls table
+        nodes, head_node_index = get_ordered_nodes()
+
+        if not nodes:
+            print("🚫 No Ray nodes found in the cluster.")
+            return None
+
+        # Create display list with proper indexing
+        display_nodes = []
+        for i, node in enumerate(nodes):
+            node_ip = node.get('NodeManagerAddress', 'N/A')
+            node_id = node.get('NodeID', 'N/A')[:6]
+            is_head = (i == head_node_index)
+
+            # Get resources for display
+            resources = node.get('Resources', {})
+            cpu = int(resources.get('CPU', 0)) if resources.get('CPU', 0) else 0
+            gpu = int(resources.get('GPU', 0)) if resources.get('GPU', 0) else 0
+            memory_gb = resources.get('memory', 0) / (1024**3) if resources.get('memory') else 0
+
+            # Get special resources (accelerators, etc.)
+            special_resources = []
+            for key, value in sorted(resources.items()):
+                if key not in ['CPU', 'GPU', 'memory', 'object_store_memory'] and not key.startswith('node:'):
+                    if 'accelerator' in key.lower() or 'tpu' in key.lower():
+                        special_resources.append(f"{key}: {int(value) if isinstance(value, float) and value.is_integer() else value}")
+
+            display_nodes.append({
+                'node': node,
+                'ip': node_ip,
+                'id': node_id,
+                'is_head': is_head,
+                'cpu': cpu,
+                'gpu': gpu,
+                'memory': f"{memory_gb:.1f}GB",
+                'special': ', '.join(special_resources) if special_resources else '',
+                'index': 0 if is_head else len([n for j, n in enumerate(nodes[:i]) if j != head_node_index]) + 1
+            })
+
+        # Simple numbered selection instead of arrow keys
+        os.system('clear')
+        print("RaySSH: Node Selection")
+        print("=" * 50)
+        print()
+        
+        # Display nodes as a numbered list with 0-based indexing matching command line
+        print("    #    Type     IP Address       ID       CPU    GPU    Memory")
+        print("-" * 60)
+        
+        for i, display_node in enumerate(display_nodes):
+            # Use 0 for head node, then 1, 2, 3... for non-head nodes
+            if display_node['is_head']:
+                node_number = 0
+                node_type = "HEAD"
+            else:
+                node_number = display_node['index']  # This already has the correct -1, -2, -3... logic
+                node_type = f"-{display_node['index']}"
+            
+            print(f"    {node_number:<4} {node_type:<8} {display_node['ip']:<16} {display_node['id']:<8} {display_node['cpu']:<6} {display_node['gpu']:<6} {display_node['memory']:<8}")
+            
+            # Show special resources if they exist
+            if display_node['special']:
+                print(f"         └─ {display_node['special']}")
+        
+        print()
+        print("=" * 50)
+        print("Enter node number to connect (0=head, 1+=non-head, 'q' to cancel):")
+        
+        try:
+            choice = input("> ").strip()
+            if choice.lower() in ['q', 'quit', 'exit']:
+                return None
+            if choice == '':
+                return None
+            
+            node_num = int(choice)
+            
+            # Find the node with the matching number
+            selected_node = None
+            for display_node in display_nodes:
+                if display_node['is_head'] and node_num == 0:
+                    selected_node = display_node
+                    break
+                elif not display_node['is_head'] and node_num == display_node['index']:
+                    selected_node = display_node
+                    break
+            
+            if selected_node:
+                print(f"Connecting to {selected_node['ip']}...")
+                return selected_node['ip']
+            else:
+                # Show available numbers for error message
+                available_nums = []
+                for display_node in display_nodes:
+                    if display_node['is_head']:
+                        available_nums.append("0")
+                    else:
+                        available_nums.append(str(display_node['index']))
+                print(f"Invalid selection. Available: {', '.join(available_nums)} or 'q' to cancel.")
+                return None
+                
+        except (ValueError, KeyboardInterrupt):
+            return None
+
+    except Exception as e:
+        print(f"Error in node selector: {e}", file=sys.stderr)
+        return None
+
+
 def main():
     """Main entry point for RaySSH."""
     # Parse command line arguments
     if len(sys.argv) < 2:
-        print_help()
-        return 0
+        # No arguments - show interactive node selector
+        selected_node_ip = interactive_node_selector()
+        if selected_node_ip is None:
+            print("\nCancelled.")
+            return 0
+        node_arg = selected_node_ip
+    else:
+        # Handle help command
+        if sys.argv[1] in ['--help', '-h']:
+            print_help()
+            return 0
 
-    # Handle help command
-    if sys.argv[1] in ['--help', '-h']:
-        print_help()
-        return 0
+        # Handle list nodes command
+        if sys.argv[1] in ['--list', '--ls', '--show']:
+            if len(sys.argv) != 2:
+                print("Error: --list, --ls, and --show options do not accept additional arguments", file=sys.stderr)
+                return 1
+            return print_nodes_table()
 
-    # Handle list nodes command
-    if sys.argv[1] in ['--list', '--ls', '--show']:
+        # Handle node connection
         if len(sys.argv) != 2:
-            print("Error: --list, --ls, and --show options do not accept additional arguments", file=sys.stderr)
+            print("Error: Invalid number of arguments", file=sys.stderr)
+            print("Use 'rayssh --help' for usage information", file=sys.stderr)
             return 1
-        return print_nodes_table()
 
-    # Handle node connection
-    if len(sys.argv) != 2:
-        print("Error: Invalid number of arguments", file=sys.stderr)
-        print("Use 'rayssh --help' for usage information", file=sys.stderr)
-        return 1
-
-    node_arg = sys.argv[1]
+        node_arg = sys.argv[1]
 
     # Handle node index argument (-0, -1, -2, etc.)
     if node_arg.startswith('-') and node_arg[1:].isdigit():
