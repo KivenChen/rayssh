@@ -46,6 +46,7 @@ class RaySSHClient:
         self.current_interactive_session = None  # Track active interactive session
         self.shutdown_event = threading.Event()
         self.friendly_workspace_path = None  # Track workspace symlink for cleanup
+        self.uploaded_workspace_active = False  # Whether a temporary uploaded workspace is active
         # Check if we're in remote mode (using RAY_ADDRESS)
         ray_address_from_env = os.environ.get('RAY_ADDRESS')
         self.is_remote_mode = (ray_address_from_env and node_arg == ray_address_from_env)
@@ -127,7 +128,9 @@ class RaySSHClient:
                 if workspace_info['success']:
                     # Store for cleanup later
                     self.friendly_workspace_path = workspace_info['friendly_path']
+                    self.uploaded_workspace_active = True
                     print(f"✅ Remote shell ready at ~/.rayssh/workdirs/{workspace_info['project_name']} on {node_info['hostname']}")
+                    print("⚠️ Note: This workspace is temporary. Changes stay if you keep the session, but uploads are cleaned by Ray when sessions end.")
                 else:
                     print(f"✅ Remote shell ready on {node_info['hostname']}")
                     print(f"⚠️  Could not create friendly workspace link: {workspace_info.get('error', 'Unknown error')}")
@@ -303,6 +306,10 @@ class RaySSHClient:
         Returns:
             True to continue, False to exit
         """
+        # If working in an uploaded temp workspace, show a quick reminder
+        if self.uploaded_workspace_active:
+            print("⚠️ Temporary workspace: Files are in an uploaded working directory for this session.")
+
         # Parse vim command to extract filename
         parts = command.strip().split()
         if len(parts) < 2:
@@ -1087,20 +1094,37 @@ def submit_file_job(file_path: str, no_wait: bool = False) -> int:
                 print(f"Error reading file: {e}", file=sys.stderr)
                 return 1
         
+        # Prepare working dir and runtime env options
+        working_dir_opt = '--working-dir=.'
+        runtime_env_candidates = ['runtime_env.yaml', 'runtime_env.yml']
+        runtime_env_file = next((f for f in runtime_env_candidates if os.path.isfile(f)), None)
+        runtime_env_present = runtime_env_file is not None
+        
         # Build Ray job submit command
         cmd = [
             'ray', 'job', 'submit',
             '--entrypoint-num-cpus=1',
-            '--working-dir=.',
-            '--'
+            working_dir_opt,
         ]
         
+        if runtime_env_present:
+            cmd.append(f'--runtime-env={runtime_env_file}')
+        
+        cmd.append('--')
+        
         if no_wait:
-            cmd.insert(-1, '--no-wait')  # Insert before '--'
+            # Insert no-wait just before entrypoint
+            cmd.insert(cmd.index('--'), '--no-wait')
             
         cmd.extend([interpreter, file_path])
         
+        # Print concise context
         print(f"🚀 RaySSH: Submitting {interpreter} job: {file_path}")
+        print(f"📦 Working dir: .")
+        if runtime_env_present:
+            print(f"🧩 Runtime env: ./{runtime_env_file}")
+        else:
+            print(f"🧩 Runtime env: remote (create runtime_env.yaml or runtime_env.yml to customize)")
         print(f"📋 Command: {' '.join(cmd)}")
         print("⚠️  Experimental feature - file execution via Ray job submission")
         print()
