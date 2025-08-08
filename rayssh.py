@@ -36,14 +36,19 @@ from utils import (
 class RaySSHClient:
     """Main client for RaySSH that provides an interactive shell interface."""
 
-    def __init__(self, node_arg: str):
+    def __init__(self, node_arg: str, working_dir: str = None):
         """Initialize the RaySSH client for the target node."""
         self.node_arg = node_arg
+        self.working_dir = working_dir  # Directory to upload for Ray Client connections
         self.shell_actor = None
         self.target_node = None
         self.current_command_future = None
         self.current_interactive_session = None  # Track active interactive session
         self.shutdown_event = threading.Event()
+        self.friendly_workspace_path = None  # Track workspace symlink for cleanup
+        # Check if we're in remote mode (using RAY_ADDRESS)
+        ray_address_from_env = os.environ.get('RAY_ADDRESS')
+        self.is_remote_mode = (ray_address_from_env and node_arg == ray_address_from_env)
 
         # Set up signal handlers
         signal.signal(signal.SIGINT, self._handle_sigint)
@@ -76,18 +81,68 @@ class RaySSHClient:
                 pass
         else:
             # No command running, exit the shell
-            print("\nExiting...")
+            print("\n👋 Exiting...")
             self.shutdown_event.set()
 
     def _handle_sigterm(self, signum, frame):
         """Handle SIGTERM."""
-        print("\nTerminating...")
+        print("\n🛑 Terminating...")
         self.shutdown_event.set()
 
     def initialize(self):
         """Initialize Ray and set up the shell actor on the target node."""
-        print("Initializing RaySSH...")
+        if self.is_remote_mode:
+            return self._initialize_remote_mode()
+        else:
+            return self._initialize_local_cluster()
 
+    def _initialize_remote_mode(self):
+        """Initialize remote connection with optional working directory upload."""
+        try:
+            # Initialize remote connection with working directory
+            if self.working_dir:
+                abs_working_dir = os.path.abspath(self.working_dir)
+                print(f"🌐 Connecting to remote cluster and uploading {os.path.basename(abs_working_dir)}...")
+            else:
+                print(f"🌐 Connecting to remote cluster...")
+                
+            ensure_ray_initialized(ray_address=self.node_arg, working_dir=self.working_dir)
+            
+            # Deploy shell actor for remote mode
+            self.shell_actor = ShellActor.remote()
+            
+            # Verify the actor is running and get node info
+            node_info = ray.get(self.shell_actor.get_node_info.remote())
+            
+            # Set up friendly workspace if working directory was uploaded
+            if self.working_dir:
+                # Extract project name from working directory path
+                project_name = os.path.basename(os.path.abspath(self.working_dir))
+                if project_name == '.':
+                    # If current directory, use parent directory name
+                    project_name = os.path.basename(os.path.dirname(os.path.abspath(self.working_dir))) or 'workspace'
+                
+                workspace_info = ray.get(self.shell_actor.setup_friendly_workspace.remote(project_name))
+                
+                if workspace_info['success']:
+                    # Store for cleanup later
+                    self.friendly_workspace_path = workspace_info['friendly_path']
+                    print(f"✅ Remote shell ready at ~/.rayssh/workdirs/{workspace_info['project_name']} on {node_info['hostname']}")
+                else:
+                    print(f"✅ Remote shell ready on {node_info['hostname']}")
+                    print(f"⚠️  Could not create friendly workspace link: {workspace_info.get('error', 'Unknown error')}")
+            else:
+                print(f"✅ Remote shell ready on {node_info['hostname']}")
+            print()
+            
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error connecting to remote cluster: {e}", file=sys.stderr)
+            return False
+
+    def _initialize_local_cluster(self):
+        """Initialize connection to local Ray cluster."""
         # Ensure Ray is initialized
         ensure_ray_initialized()
 
@@ -95,7 +150,7 @@ class RaySSHClient:
         try:
             self.target_node = find_target_node(self.node_arg)
             node_resources = get_node_resources(self.target_node)
-            print(f"Found target node: {node_resources['node_ip']} (ID: {node_resources['node_id'][:8]}...)")
+            print(f"🎯 Found target node: {node_resources['node_ip']} (ID: {node_resources['node_id'][:8]}...)")
         except ValueError as e:
             print(f"Error: {e}", file=sys.stderr)
             return False
@@ -112,8 +167,8 @@ class RaySSHClient:
 
             # Verify the actor is running and get node info
             node_info = ray.get(self.shell_actor.get_node_info.remote())
-            print(f"Shell actor deployed on {node_info['hostname']} (user: {node_info['user']})")
-            print(f"Initial working directory: {node_info['cwd']}")
+            print(f"✅ Shell actor deployed on {node_info['hostname']} (user: {node_info['user']})")
+            print(f"📁 Initial working directory: {node_info['cwd']}")
             print()
 
         except Exception as e:
@@ -582,7 +637,7 @@ class RaySSHClient:
                         command = input(prompt)
                     except EOFError:
                         # Ctrl-D pressed
-                        print("\nExiting...")
+                        print("\n👋 Exiting...")
                         break
 
                     # Execute command
@@ -605,6 +660,13 @@ class RaySSHClient:
         """Clean up resources."""
         # Clean up tab completion
         self._cleanup_tab_completion()
+
+        # Clean up workspace symlink if we created one
+        if self.friendly_workspace_path and self.shell_actor:
+            try:
+                ray.get(self.shell_actor.cleanup_workspace.remote(self.friendly_workspace_path))
+            except Exception:
+                pass
 
         if self.shell_actor:
             try:
@@ -811,8 +873,9 @@ def print_help():
 RaySSH: Command Ray nodes like a shell or submit jobs
 
 Usage:
-    rayssh                          # Randomly connect to a worker node
+    rayssh                          # Randomly connect to a worker node (or remote mode if RAY_ADDRESS set)
     rayssh <ip|node_id|-index>      # Connect to specific node
+    rayssh <dir>                    # Remote mode with directory upload (if RAY_ADDRESS set)
     rayssh -l                       # Interactive node selection
     rayssh --ls                     # Print nodes table
     rayssh [-q] <file>              # Submit file as Ray job (experimental)
@@ -833,8 +896,16 @@ Examples:
     rayssh script.py                # Submit Python job (tails log)
     rayssh -q train.sh              # Submit bash job (no-wait, view log at Ray Dashboard)
 
+Environment Variables:
+    RAY_ADDRESS=ray://localhost:10001   # Enable remote mode
+    export RAY_ADDRESS=ray://cluster:10001
+    rayssh                          # → Connect remotely (no upload)
+    rayssh ~/project                # → Connect remotely + upload ~/project
+    rayssh .                        # → Connect remotely + upload current directory
+
 🖥️ Shell features: vim remote files, tab completion, Ctrl-C interrupts, interactive programs
 🚀 Job submission: Python/Bash files, working-dir='.', entrypoint-num-cpus=1
+🌐 Remote mode: Upload local directories, work on remote clusters like local development
 """
     print(help_text.strip())
 
@@ -886,7 +957,7 @@ def interactive_node_selector():
 
         # Simple numbered selection instead of arrow keys
         os.system('clear')
-        print("RaySSH: Node Selection")
+        print("🎯 RaySSH: Node Selection")
         print("=" * 50)
         print()
         
@@ -911,7 +982,7 @@ def interactive_node_selector():
         
         print()
         print("=" * 50)
-        print("Enter node number to connect (0=head, 1+=non-head, 'q' to cancel):")
+        print("🔢 Enter node number to connect (0=head, 1+=non-head, 'q' to cancel):")
         
         try:
             choice = input("> ").strip()
@@ -933,7 +1004,7 @@ def interactive_node_selector():
                     break
             
             if selected_node:
-                print(f"Connecting to {selected_node['ip']}...")
+                print(f"🚀 Connecting to {selected_node['ip']}...")
                 return selected_node['ip']
             else:
                 # Show available numbers for error message
@@ -943,14 +1014,14 @@ def interactive_node_selector():
                         available_nums.append("0")
                     else:
                         available_nums.append(str(display_node['index']))
-                print(f"Invalid selection. Available: {', '.join(available_nums)} or 'q' to cancel.")
+                print(f"❌ Invalid selection. Available: {', '.join(available_nums)} or 'q' to cancel.")
                 return None
                 
         except (ValueError, KeyboardInterrupt):
             return None
 
     except Exception as e:
-        print(f"Error in node selector: {e}", file=sys.stderr)
+        print(f"❌ Error in node selector: {e}", file=sys.stderr)
         return None
 
 
@@ -1045,19 +1116,43 @@ def submit_file_job(file_path: str, no_wait: bool = False) -> int:
 
 def main():
     """Main entry point for RaySSH."""
+    # Check if RAY_ADDRESS is set
+    ray_address_env = os.environ.get('RAY_ADDRESS')
+    
     # Parse command line arguments
     if len(sys.argv) < 2:
-        # No arguments - randomly connect to a worker node
-        try:
-            selected_node = get_random_worker_node()
-            node_arg = selected_node.get('NodeManagerAddress')
-            print(f"Randomly connecting to worker node: {node_arg}")
-        except ValueError as e:
-            print(f"Error: {e}")
-            return 1
-        except Exception as e:
-            print(f"Error selecting random worker node: {e}", file=sys.stderr)
-            return 1
+        # No arguments
+        if ray_address_env:
+            # RAY_ADDRESS is set - connect in remote mode without upload
+            print(f"🌐 Connecting to remote cluster...")
+            
+            client = RaySSHClient(ray_address_env, working_dir=None)
+            
+            try:
+                if not client.initialize():
+                    return 1
+                client.run_interactive_shell()
+                return 0
+            except KeyboardInterrupt:
+                print("\n⚡ Interrupted")
+                return 1
+            except Exception as e:
+                print(f"Error: {e}", file=sys.stderr)
+                return 1
+            finally:
+                client.cleanup()
+        else:
+            # No RAY_ADDRESS or not Ray Client - randomly connect to a worker node
+            try:
+                selected_node = get_random_worker_node()
+                node_arg = selected_node.get('NodeManagerAddress')
+                print(f"🎲 Randomly connecting to worker node: {node_arg}")
+            except ValueError as e:
+                print(f"Error: {e}")
+                return 1
+            except Exception as e:
+                print(f"Error selecting random worker node: {e}", file=sys.stderr)
+                return 1
     else:
         # Handle help command
         if sys.argv[1] in ['--help', '-h']:
@@ -1078,42 +1173,64 @@ def main():
                 return 1
             selected_node_ip = interactive_node_selector()
             if selected_node_ip is None:
-                print("\nCancelled.")
+                print("\n❌ Cancelled.")
                 return 0
             node_arg = selected_node_ip
         else:
-            # Handle file job submission (experimental feature)
-            # Check for patterns: rayssh <file> or rayssh -q <file>
-            file_job_submission = False
-            no_wait = False
-            file_path = None
-            
+            # Handle single argument: could be directory (for remote mode) or file (for job submission)
             if len(sys.argv) == 2:
-                # Pattern: rayssh <file>
-                potential_file = sys.argv[1]
-                # Check if it looks like a file (has extension and exists)
-                if ('.' in potential_file and 
-                    os.path.exists(potential_file) and 
-                    os.path.isfile(potential_file)):
-                    file_job_submission = True
-                    file_path = potential_file
+                argument = sys.argv[1]
+                
+                # Check if it's a file for job submission
+                if (os.path.exists(argument) and os.path.isfile(argument) and '.' in argument):
+                    # It's a file - submit as Ray job
+                    return submit_file_job(argument, no_wait=False)
+                
+                # Check if it's a directory and RAY_ADDRESS is set
+                elif ray_address_env and os.path.exists(argument) and os.path.isdir(argument):
+                    # It's a directory and we're in remote mode - upload and connect
+                    print(f"🌐 Connecting to remote cluster...")
+                    print(f"📦 Uploading directory: {os.path.abspath(argument)}")
+                    
+                    client = RaySSHClient(ray_address_env, working_dir=argument)
+                    
+                    try:
+                        if not client.initialize():
+                            return 1
+                        client.run_interactive_shell()
+                        return 0
+                    except KeyboardInterrupt:
+                        print("\n⚡ Interrupted")
+                        return 1
+                    except Exception as e:
+                        print(f"Error: {e}", file=sys.stderr)
+                        return 1
+                    finally:
+                        client.cleanup()
+                
+                # Check if it's a directory but no RAY_ADDRESS
+                elif os.path.exists(argument) and os.path.isdir(argument):
+                    print(f"Error: Directory specified but RAY_ADDRESS not set.", file=sys.stderr)
+                    print(f"Set RAY_ADDRESS to enable remote mode with directory upload.", file=sys.stderr)
+                    return 1
+                
+                # Not a file or directory - might be node argument, let it fall through
+                
+            # Handle -q file pattern
             elif len(sys.argv) == 3 and sys.argv[1] == '-q':
-                # Pattern: rayssh -q <file>
                 potential_file = sys.argv[2]
-                if ('.' in potential_file and 
-                    os.path.exists(potential_file) and 
-                    os.path.isfile(potential_file)):
-                    file_job_submission = True
-                    no_wait = True
-                    file_path = potential_file
-            
-            if file_job_submission:
-                return submit_file_job(file_path, no_wait)
+                if (os.path.exists(potential_file) and os.path.isfile(potential_file) and '.' in potential_file):
+                    return submit_file_job(potential_file, no_wait=True)
+                else:
+                    print(f"Error: File '{potential_file}' not found or not a valid file", file=sys.stderr)
+                    return 1
+
+
 
             # Handle node connection
             if len(sys.argv) != 2:
                 print("Error: Invalid arguments", file=sys.stderr)
-                print("Usage: rayssh <node|file> or rayssh -q <file>", file=sys.stderr)
+                print("Usage: rayssh <node|file|directory> or rayssh -q <file>", file=sys.stderr)
                 print("Use 'rayssh --help' for more information", file=sys.stderr)
                 return 1
 
@@ -1126,7 +1243,7 @@ def main():
             node = get_node_by_index(index)
             # Use the node's IP address as the connection target
             node_arg = node.get('NodeManagerAddress')
-            print(f"Connecting to node -{index}: {node_arg}")
+            print(f"🔗 Connecting to node -{index}: {node_arg}")
         except ValueError as e:
             print(f"Error: {e}", file=sys.stderr)
             print("Use 'rayssh --ls' to see available nodes", file=sys.stderr)
@@ -1136,7 +1253,8 @@ def main():
             return 1
 
     # Create and run the client
-    client = RaySSHClient(node_arg)
+    # For local cluster connections, we don't use working_dir
+    client = RaySSHClient(node_arg, working_dir=None)
 
     try:
         if not client.initialize():
@@ -1146,7 +1264,7 @@ def main():
         return 0
 
     except KeyboardInterrupt:
-        print("\nInterrupted")
+        print("\n⚡ Interrupted")
         return 1
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)

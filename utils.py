@@ -95,7 +95,7 @@ def find_target_node(node_arg: str) -> Dict:
     return node
 
 
-def ensure_ray_initialized():
+def ensure_ray_initialized(ray_address: str = None, working_dir: str = None):
     """Ensure Ray is initialized, initialize if not."""
     if not ray.is_initialized():
         try:
@@ -107,15 +107,31 @@ def ensure_ray_initialized():
             os.environ['RAY_RAYLET_LOG_LEVEL'] = 'FATAL'  # Suppress raylet logs
             os.environ['RAY_CORE_WORKER_LOG_LEVEL'] = 'FATAL'  # Suppress core worker logs
 
-            # Initialize Ray with suppressed file system monitor warnings
-            ray.init(
-                logging_level='FATAL',  # Only show fatal errors
-                log_to_driver=False,    # Don't send raylet logs to driver
-                include_dashboard=False, # Disable dashboard to reduce log noise
-                _temp_dir='/tmp/ray',   # Use consistent temp directory
-                configure_logging=False, # Don't configure Python logging
-                ignore_reinit_error=True # Ignore reinitialization errors
-            )
+            # Prepare runtime environment for Ray Client
+            runtime_env = {}
+            if working_dir and ray_address and ray_address.startswith('ray://'):
+                runtime_env['working_dir'] = working_dir
+
+            # Initialize Ray (either local cluster or Ray Client)
+            if ray_address and ray_address.startswith('ray://'):
+                # Ray Client connection
+                ray.init(
+                    address=ray_address,
+                    runtime_env=runtime_env if runtime_env else None,
+                    logging_level='FATAL',
+                    log_to_driver=False,
+                    ignore_reinit_error=True
+                )
+            else:
+                # Local Ray cluster
+                ray.init(
+                    logging_level='FATAL',  # Only show fatal errors
+                    log_to_driver=False,    # Don't send raylet logs to driver
+                    include_dashboard=False, # Disable dashboard to reduce log noise
+                    _temp_dir='/tmp/ray',   # Use consistent temp directory
+                    configure_logging=False, # Don't configure Python logging
+                    ignore_reinit_error=True # Ignore reinitialization errors
+                )
         except Exception as e:
             raise RuntimeError(f"Failed to initialize Ray: {e}") from e
 

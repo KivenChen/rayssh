@@ -34,6 +34,83 @@ class ShellActor:
             'user': os.environ.get('USER', 'unknown')
         }
 
+    def setup_friendly_workspace(self, project_name: str = None) -> Dict:
+        """
+        Create a friendly soft link to the uploaded directory and change to it.
+        
+        Args:
+            project_name: Name for the workspace link (defaults to 'workspace')
+            
+        Returns:
+            Dict with 'friendly_path', 'original_path', 'success' keys
+        """
+        try:
+            # Default project name
+            if not project_name:
+                project_name = 'workspace'
+            
+            # Get home directory and create rayssh workdirs structure
+            home_dir = os.path.expanduser('~')
+            rayssh_dir = os.path.join(home_dir, '.rayssh')
+            workdirs_path = os.path.join(rayssh_dir, 'workdirs')
+            
+            # Create directories if they don't exist
+            os.makedirs(workdirs_path, exist_ok=True)
+            
+            # Create friendly link path in workdirs
+            friendly_path = os.path.join(workdirs_path, project_name)
+            original_path = self.cwd
+            
+            # Remove existing link if it exists
+            if os.path.islink(friendly_path):
+                os.unlink(friendly_path)
+            elif os.path.exists(friendly_path):
+                # If it's a real directory, use a different name
+                import time
+                timestamp = int(time.time())
+                project_name = f"{project_name}_{timestamp}"
+                friendly_path = os.path.join(workdirs_path, project_name)
+            
+            # Create soft link
+            os.symlink(original_path, friendly_path)
+            
+            # Change to the friendly path
+            self.cwd = friendly_path
+            
+            return {
+                'friendly_path': friendly_path,
+                'original_path': original_path,
+                'project_name': project_name,
+                'success': True
+            }
+            
+        except Exception as e:
+            return {
+                'friendly_path': None,
+                'original_path': self.cwd,
+                'project_name': project_name,
+                'success': False,
+                'error': str(e)
+            }
+
+    def cleanup_workspace(self, friendly_path: str) -> bool:
+        """
+        Clean up the symlink when session ends.
+        
+        Args:
+            friendly_path: Path to the symlink to remove
+            
+        Returns:
+            bool: True if cleanup successful, False otherwise
+        """
+        try:
+            if os.path.islink(friendly_path):
+                os.unlink(friendly_path)
+                return True
+            return False
+        except Exception:
+            return False
+
     def execute_command(self, command: str, timeout: Optional[float] = None) -> Dict:
         """
         Execute a shell command and return the result.
