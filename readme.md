@@ -1,7 +1,4 @@
 # RaySSH: Command Ray nodes like a shell or submit jobs
-
-
-
 ## Features
 
 🖥️ **Interactive Shell**: Command Ray nodes with a familiar shell interface  
@@ -87,10 +84,12 @@ export RAY_ADDRESS=ray://gpu-cluster.company.com:10001
 
 **Then work remotely like you're local:**
 ```bash
-# Upload your project and start working
 cd ~/machine-learning-project
 # Manage what files to upload, and what to ignore
 echo "*.parquet" >> .gitignore
+# You can also customize your runtime environment in a runtime_env.yaml
+vim runtime_env.yaml
+# Upload your project and start working
 rayssh .
 # Your project files are now uploaded to remotely
 > ls                    # See your uploaded files
