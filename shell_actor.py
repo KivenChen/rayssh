@@ -467,6 +467,81 @@ class ShellActor:
         """Get all environment variables."""
         return self.env.copy()
 
+    def list_directory(self, path: Optional[str] = None, include_hidden: bool = True, max_entries: int = 5000) -> Dict:
+        """
+        List directory entries quickly for autocomplete.
+
+        Args:
+            path: Directory to list. If None or '.', use current working directory. If relative, resolve against cwd.
+            include_hidden: Whether to include entries starting with '.'
+            max_entries: Maximum number of entries to return to avoid huge payloads
+
+        Returns:
+            Dict with 'success', 'entries' (list of {name, is_dir}), 'truncated' (bool), 'error' keys
+        """
+        try:
+            if not path or path == '.':
+                dir_path = self.cwd
+            else:
+                expanded = os.path.expanduser(path)
+                dir_path = expanded if os.path.isabs(expanded) else os.path.join(self.cwd, expanded)
+            dir_path = os.path.normpath(dir_path)
+
+            if not os.path.isdir(dir_path):
+                return {
+                    'success': False,
+                    'entries': [],
+                    'truncated': False,
+                    'error': f"Not a directory: {dir_path}"
+                }
+
+            entries = []
+            truncated = False
+            count = 0
+            with os.scandir(dir_path) as it:
+                for entry in it:
+                    name = entry.name
+                    if not include_hidden and name.startswith('.'):
+                        continue
+                    try:
+                        is_dir = entry.is_dir(follow_symlinks=False)
+                    except Exception:
+                        is_dir = False
+                    entries.append({'name': name, 'is_dir': is_dir})
+                    count += 1
+                    if count >= max_entries:
+                        truncated = True
+                        break
+
+            return {
+                'success': True,
+                'entries': entries,
+                'truncated': truncated,
+                'error': None
+            }
+
+        except PermissionError:
+            return {
+                'success': False,
+                'entries': [],
+                'truncated': False,
+                'error': 'Permission denied'
+            }
+        except FileNotFoundError:
+            return {
+                'success': False,
+                'entries': [],
+                'truncated': False,
+                'error': 'Directory not found'
+            }
+        except Exception as e:
+            return {
+                'success': False,
+                'entries': [],
+                'truncated': False,
+                'error': str(e)
+            }
+
     def read_file(self, file_path: str) -> Dict:
         """
         Read a file from the remote filesystem and return its contents.

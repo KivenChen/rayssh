@@ -215,49 +215,105 @@ class RaySSHClient:
         if not READLINE_AVAILABLE:
             return
 
+        # Lightweight in-memory cache for the last directory listing
+        last_listing = {
+            'dir': None,
+            'entries': [],
+            'timestamp': 0.0,
+            'include_hidden': True,
+        }
+
+        # Cache for the last prefix to avoid recomputing matches when cycling with TAB
+        last_match_cache = {
+            'key': None,  # (dir, prefix, absolute_flag)
+            'matches': []
+        }
+
+        # Cache for current working directory to avoid frequent remote calls
+        last_cwd_cache = {
+            'cwd': None,
+            'timestamp': 0.0,
+        }
+
+        # Time-to-live for caches (seconds)
+        CACHE_TTL_SEC = 0.35
+
         def complete_filenames(text, state):
             """Complete file names in the current directory."""
             try:
-                # Get current working directory from the remote shell
-                current_dir = ray.get(self.shell_actor.get_current_directory.remote())
+                # Get current working directory from the remote shell (with TTL cache)
+                now = time.time()
+                if (last_cwd_cache['cwd'] is None) or (now - last_cwd_cache['timestamp'] > CACHE_TTL_SEC):
+                    current_dir = ray.get(self.shell_actor.get_current_directory.remote())
+                    last_cwd_cache['cwd'] = current_dir
+                    last_cwd_cache['timestamp'] = now
+                else:
+                    current_dir = last_cwd_cache['cwd']
 
                 # Handle relative paths
                 if text.startswith('/'):
                     # Absolute path
                     search_dir = os.path.dirname(text) or '/'
                     search_pattern = os.path.basename(text)
+                    absolute_flag = True
                 elif '/' in text:
                     # Relative path with directories
                     search_dir = os.path.join(current_dir, os.path.dirname(text))
                     search_pattern = os.path.basename(text)
+                    absolute_flag = False
                 else:
                     # Just a filename
                     search_dir = current_dir
                     search_pattern = text
+                    absolute_flag = False
 
-                # Get file listings from remote shell
-                list_command = f"ls -1a '{search_dir}' 2>/dev/null"
-                result = ray.get(self.shell_actor.execute_command.remote(list_command))
+                # Prepare cache key
+                cache_key = (search_dir, search_pattern, absolute_flag)
 
-                if result['returncode'] != 0:
-                    return None
+                # If cache key changed, recompute matches
+                if last_match_cache['key'] != cache_key:
+                    # Directory listing caching (avoid repeated remote calls)
+                    include_hidden = True if search_pattern.startswith('.') else False
+                    need_listing = (
+                        last_listing['dir'] != search_dir or
+                        (now - last_listing['timestamp'] > CACHE_TTL_SEC) or
+                        (last_listing.get('include_hidden') != include_hidden)
+                    )
+                    if need_listing:
+                        listing = ray.get(self.shell_actor.list_directory.remote(search_dir, include_hidden))
+                        if not listing.get('success', False):
+                            return None
+                        # Store listing in cache
+                        last_listing['dir'] = search_dir
+                        last_listing['entries'] = listing.get('entries', [])
+                        last_listing['timestamp'] = now
+                        last_listing['include_hidden'] = include_hidden
 
-                # Parse the file list
-                files = result['stdout'].strip().split('\n') if result['stdout'].strip() else []
+                    # Build matches from cached listing
+                    files = [e['name'] for e in last_listing['entries']]
 
-                # Filter files that match the pattern
-                matches = []
-                for file in files:
-                    if file and file.startswith(search_pattern):
-                        if '/' in text:
-                            # Reconstruct the full path for relative paths
-                            if text.startswith('/'):
-                                full_path = os.path.join(os.path.dirname(text), file)
+                    matches = []
+                    base_dir = os.path.dirname(text) if '/' in text else ''
+                    for file in files:
+                        if file and file.startswith(search_pattern):
+                            # If it's a directory, append a trailing slash for UX
+                            is_dir = False
+                            # Try to find 'is_dir' quickly from entries
+                            for entry in last_listing['entries']:
+                                if entry['name'] == file:
+                                    is_dir = bool(entry.get('is_dir'))
+                                    break
+                            display = file + ('/' if is_dir else '')
+                            if base_dir:
+                                full_path = os.path.join(os.path.dirname(text), display)
+                                matches.append(full_path)
                             else:
-                                full_path = os.path.join(os.path.dirname(text), file)
-                            matches.append(full_path)
-                        else:
-                            matches.append(file)
+                                matches.append(display)
+
+                    last_match_cache['key'] = cache_key
+                    last_match_cache['matches'] = matches
+                else:
+                    matches = last_match_cache['matches']
 
                 # Return the appropriate match
                 try:
@@ -700,7 +756,7 @@ def get_ordered_nodes():
     and head_node_index is the index of the head node.
     """
     # Ensure Ray is initialized
-    ensure_ray_initialized()
+    ensure_ray_initialized(ray_address=os.environ.get('RAY_ADDRESS'), connect_only=True)
 
     # Get all nodes in the cluster
     all_nodes = get_ray_cluster_nodes()
@@ -791,7 +847,7 @@ def print_nodes_table():
     """Print a table of available Ray nodes."""
     try:
         # Ensure Ray is initialized
-        ensure_ray_initialized()
+        ensure_ray_initialized(ray_address=os.environ.get('RAY_ADDRESS'), connect_only=True)
 
         # Get all nodes in the cluster
         all_nodes = get_ray_cluster_nodes()
