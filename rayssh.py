@@ -984,18 +984,15 @@ Examples:
     rayssh --ls                     # Show nodes table
     rayssh script.py                # Submit Python job (tails log)
     rayssh -q train.sh              # Submit bash job (no-wait, view log at Ray Dashboard)
+    n_gpus=8 rayssh train.py        # GPUs to request for rayssh <file> (only maps to --entrypoint-num-gpus)
 
 Environment Variables:
     RAY_ADDRESS=ray://localhost:10001   # Enable remote mode
-    export RAY_ADDRESS=ray://cluster:10001
-    rayssh                          # → Connect remotely (no upload)
-    rayssh ~/project                # → Connect remotely + upload ~/project
-    rayssh .                        # → Connect remotely + upload current directory
-
-🖥️ Shell features: vim remote files, tab completion, Ctrl-C interrupts, interactive programs
-🚀 Job submission: Python/Bash files, working-dir='.', entrypoint-num-cpus=1
-🌐 Remote mode: Upload local directories, work on remote clusters like local development
-"""
+ 
+ 🖥️ Shell features: vim remote files, tab completion, Ctrl-C interrupts, interactive programs
+ 🚀 Job submission: Python/Bash files, working-dir='.', entrypoint-num-cpus=1
+ 🌐 Remote mode: Upload local directories, work on remote clusters like local development
+ """
     print(help_text.strip())
 
 
@@ -1182,12 +1179,31 @@ def submit_file_job(file_path: str, no_wait: bool = False) -> int:
         runtime_env_file = next((f for f in runtime_env_candidates if os.path.isfile(f)), None)
         runtime_env_present = runtime_env_file is not None
         
+        # Parse GPUs from environment variable (supports 'n_gpus' or 'N_GPUS')
+        gpu_env = os.environ.get('n_gpus') or os.environ.get('N_GPUS')
+        entrypoint_num_gpus_arg = None
+        gpu_str = None
+        if gpu_env is not None and gpu_env != '':
+            try:
+                gpu_count = float(gpu_env)
+                if gpu_count < 0:
+                    raise ValueError
+                # Use integer formatting if whole number, else keep float
+                gpu_str = str(int(gpu_count)) if gpu_count.is_integer() else str(gpu_count)
+                entrypoint_num_gpus_arg = f'--entrypoint-num-gpus={gpu_str}'
+            except Exception:
+                print(f"Error: Invalid n_gpus value '{gpu_env}'. Must be a number >= 0.", file=sys.stderr)
+                return 1
+        
         # Build Ray job submit command
         cmd = [
             'ray', 'job', 'submit',
             '--entrypoint-num-cpus=1',
             working_dir_opt,
         ]
+        
+        if entrypoint_num_gpus_arg:
+            cmd.append(entrypoint_num_gpus_arg)
         
         if runtime_env_present:
             cmd.append(f'--runtime-env={runtime_env_file}')
@@ -1207,6 +1223,8 @@ def submit_file_job(file_path: str, no_wait: bool = False) -> int:
             print(f"🧩 Runtime env: ./{runtime_env_file}")
         else:
             print(f"🧩 Runtime env: remote (create runtime_env.yaml or runtime_env.yml to customize)")
+        if gpu_str is not None:
+            print(f"🎛️ GPUs: {gpu_str}")
         print(f"📋 Command: {' '.join(cmd)}")
         print("⚠️  Experimental feature - file execution via Ray job submission")
         print()
