@@ -762,30 +762,19 @@ class RaySSHClient:
             # Clean up tab completion
             self._cleanup_tab_completion()
 
-        print("Shell session ended.")
-
     def cleanup(self):
         """Clean up resources."""
         # Clean up tab completion
         self._cleanup_tab_completion()
 
-        # Clean up workspace symlink if we created one
-        if self.friendly_workspace_path and self.shell_actor:
-            try:
-                ray.get(self.shell_actor.cleanup_workspace.remote(self.friendly_workspace_path))
-            except Exception:
-                pass
-
+        # One-shot actor cleanup (workspace + processes)
         if self.shell_actor:
             try:
-                # Clean up any running processes in the shell actor
-                ray.get(self.shell_actor.cleanup.remote())
-
-                # Kill the actor
+                ray.get(self.shell_actor.cleanup_all.remote(self.friendly_workspace_path))
                 ray.kill(self.shell_actor)
             except Exception:
                 pass
-
+            
         # Shutdown Ray if we initialized it
         if ray.is_initialized():
             try:

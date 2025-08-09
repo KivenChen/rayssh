@@ -140,6 +140,26 @@ class ShellActor:
         except Exception:
             return False
 
+    def cleanup_all(self, friendly_path: Optional[str] = None) -> Dict:
+        """
+        One-shot cleanup to reduce RPCs: remove workspace link (if any) and clean processes.
+        Returns a dict summary.
+        """
+        ws_removed = False
+        try:
+            if friendly_path and os.path.islink(friendly_path):
+                os.unlink(friendly_path)
+                ws_removed = True
+        except Exception:
+            ws_removed = False
+        # Reuse existing cleanup for processes
+        try:
+            self.cleanup()
+            proc_cleaned = True
+        except Exception:
+            proc_cleaned = False
+        return {"workspace_removed": ws_removed, "processes_cleaned": proc_cleaned}
+
     def execute_command(self, command: str, timeout: Optional[float] = None) -> Dict:
         """
         Execute a shell command and return the result.
