@@ -36,6 +36,33 @@ class ShellActor:
             'user': os.environ.get('USER', 'unknown')
         }
 
+    def bootstrap(self, project_name: Optional[str] = None) -> Dict:
+        """
+        One-shot init: return node info and optionally create a friendly workspace.
+
+        Args:
+            project_name: If provided, create the friendly workspace link.
+
+        Returns:
+            Dict with keys: node_info, workspace_info (or None)
+        """
+        try:
+            info = self.get_node_info()
+        except Exception as e:
+            info = {'error': str(e)}
+
+        workspace_info = None
+        if project_name:
+            try:
+                workspace_info = self.setup_friendly_workspace(project_name)
+            except Exception as e:
+                workspace_info = {'success': False, 'error': str(e)}
+
+        return {
+            'node_info': info,
+            'workspace_info': workspace_info,
+        }
+
     def setup_friendly_workspace(self, project_name: str = None) -> Dict:
         """
         Create a friendly soft link to the uploaded directory and change to it.

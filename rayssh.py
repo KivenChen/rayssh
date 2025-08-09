@@ -49,6 +49,10 @@ class RaySSHClient:
         self.friendly_workspace_path = None  # Track workspace symlink for cleanup
         self.uploaded_workspace_active = False  # Whether a temporary uploaded workspace is active
         self._interrupt_flag = False  # Set by SIGINT to allow non-blocking interruption
+        # Cache node info to avoid redundant get_node_info RPCs
+        self.node_hostname = None
+        self.node_user = None
+        self.cached_cwd = None
         # Check if we're in remote mode (using RAY_ADDRESS)
         ray_address_from_env = os.environ.get('RAY_ADDRESS')
         self.is_remote_mode = (ray_address_from_env and node_arg == ray_address_from_env)
@@ -111,33 +115,35 @@ class RaySSHClient:
             # Deploy shell actor for remote mode
             print(f"🌐 Deploying shell actor to remote...")
             self.shell_actor = ShellActor.remote()
-            
-            # Verify the actor is running and get node info
-            node_info = ray.get(self.shell_actor.get_node_info.remote())
-            
-            # Set up friendly workspace if working directory was uploaded
+
+            # Determine optional project name for one-shot bootstrap
+            project_name = None
             if self.working_dir:
-                # Extract project name from working directory path
                 project_name = os.path.basename(os.path.abspath(self.working_dir))
                 if project_name == '.':
-                    # If current directory, use parent directory name
                     project_name = os.path.basename(os.path.dirname(os.path.abspath(self.working_dir))) or 'workspace'
-                
-                workspace_info = ray.get(self.shell_actor.setup_friendly_workspace.remote(project_name))
-                
-                if workspace_info['success']:
-                    # Store for cleanup later
-                    self.friendly_workspace_path = workspace_info['friendly_path']
-                    self.uploaded_workspace_active = True
-                    print(f"🔗 Remote shell ready at ~/.rayssh/workdirs/{workspace_info['project_name']} on {node_info['hostname']}")
-                    print("⚠️ Note: This workspace is temporary. Changes stay if you keep the session, but uploads are cleaned by Ray when sessions end.")
-                else:
-                    print(f"🔗 Remote shell ready on {node_info['hostname']}")
-                    print(f"⚠️  Could not create friendly workspace link: {workspace_info.get('error', 'Unknown error')}")
+
+            # One RPC to fetch node info and optionally create workspace
+            boot = ray.get(self.shell_actor.bootstrap.remote(project_name))
+            node_info = boot.get('node_info', {})
+            workspace_info = boot.get('workspace_info')
+
+            # Cache node info
+            self.node_hostname = node_info.get('hostname')
+            self.node_user = node_info.get('user')
+            self.cached_cwd = node_info.get('cwd')
+
+            if workspace_info and workspace_info.get('success'):
+                self.friendly_workspace_path = workspace_info['friendly_path']
+                self.uploaded_workspace_active = True
+                print(f"🔗 Remote shell ready at ~/.rayssh/workdirs/{workspace_info['project_name']} on {self.node_hostname or '?'}")
+                print("⚠️ Note: This workspace is temporary. Changes stay if you keep the session, but uploads are cleaned by Ray when sessions end.")
             else:
-                print(f"🔗 Remote shell ready on {node_info['hostname']}")
+                print(f"🔗 Remote shell ready on {self.node_hostname or '?'}")
+                if workspace_info and not workspace_info.get('success'):
+                    print(f"⚠️  Could not create friendly workspace link: {workspace_info.get('error', 'Unknown error')}")
             print()
-            
+
             return True
             
         except Exception as e:
@@ -174,6 +180,11 @@ class RaySSHClient:
             print(f"📁 Initial working directory: {node_info['cwd']}")
             print()
 
+            # Cache node info
+            self.node_hostname = node_info.get('hostname')
+            self.node_user = node_info.get('user')
+            self.cached_cwd = node_info.get('cwd')
+
         except Exception as e:
             print(f"Error deploying shell actor: {e}", file=sys.stderr)
             return False
@@ -183,29 +194,24 @@ class RaySSHClient:
     def get_prompt(self) -> str:
         """Generate a shell prompt."""
         try:
-            node_info = ray.get(self.shell_actor.get_node_info.remote())
-            hostname = node_info['hostname']
-            user = node_info['user']  # Get the real user for home directory logic
-            cwd = node_info['cwd']
+            hostname = self.node_hostname or "?"
+            user = self.node_user or "user"
+            cwd = self.cached_cwd or "~"
 
             # Shorten home directory path using the real username
             home = f"/home/{user}"
             if cwd.startswith(home):
                 if cwd == home:
-                    # Exactly in home directory
                     display_cwd = "~"
                 else:
-                    # In a subdirectory of home, show only the basename
                     relative_path = cwd[len(home):].lstrip('/')
                     if '/' in relative_path:
                         display_cwd = os.path.basename(relative_path)
                     else:
                         display_cwd = relative_path
             else:
-                # Not in home directory, show only the basename
                 display_cwd = os.path.basename(cwd) if cwd != '/' else '/'
 
-            # Always use "RaySSH" as the displayed username in the prompt
             return f"RaySSH@{hostname}:{display_cwd}$ "
         except Exception:
             return "rayssh$ "
@@ -241,14 +247,11 @@ class RaySSHClient:
         def complete_filenames(text, state):
             """Complete file names in the current directory."""
             try:
-                # Get current working directory from the remote shell (with TTL cache)
+                # Get current working directory from local cache (avoid extra RPC)
                 now = time.time()
-                if (last_cwd_cache['cwd'] is None) or (now - last_cwd_cache['timestamp'] > CACHE_TTL_SEC):
-                    current_dir = ray.get(self.shell_actor.get_current_directory.remote())
-                    last_cwd_cache['cwd'] = current_dir
-                    last_cwd_cache['timestamp'] = now
-                else:
-                    current_dir = last_cwd_cache['cwd']
+                current_dir = self.cached_cwd or last_cwd_cache.get('cwd') or '/'
+                last_cwd_cache['cwd'] = current_dir
+                last_cwd_cache['timestamp'] = now
 
                 # Handle relative paths
                 if text.startswith('/'):
@@ -398,11 +401,9 @@ class RaySSHClient:
             file_extension = os.path.splitext(filename)[1]
             base_name = os.path.basename(filename)
             
-            # Get node info for temp file naming
+            # Use cached hostname for temp file naming
             try:
-                node_info = ray.get(self.shell_actor.get_node_info.remote())
-                hostname = node_info['hostname']
-                # Sanitize hostname for filename use
+                hostname = self.node_hostname or "remote"
                 safe_hostname = re.sub(r'[^\w\-.]', '_', hostname)
             except Exception:
                 safe_hostname = "remote"
@@ -694,6 +695,13 @@ class RaySSHClient:
                 filtered_stderr = self._filter_raylet_warnings(result['stderr'])
                 if filtered_stderr:
                     print(filtered_stderr, end='', file=sys.stderr)
+
+            # Update cached cwd from result if available
+            try:
+                if isinstance(result, dict) and 'cwd' in result:
+                    self.cached_cwd = result['cwd']
+            except Exception:
+                pass
 
             return True
 
