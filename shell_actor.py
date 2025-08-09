@@ -6,6 +6,8 @@ import uuid
 from typing import Dict, Optional
 
 import ray
+import fcntl  # for ioctl to set controlling tty
+import termios  # for TIOCSCTTY
 
 
 @ray.remote
@@ -417,6 +419,24 @@ class ShellActor:
                     print(f"Error interrupting command: {e}")
         return False
 
+    def terminate_current_command_hard(self) -> bool:
+        """
+        Force terminate the currently running command (SIGKILL).
+
+        Returns:
+            True if a command was killed, False otherwise
+        """
+        with self.process_lock:
+            if self.running_process and self.running_process.poll() is None:
+                try:
+                    pid = self.running_process.pid
+                    pgid = os.getpgid(pid)
+                    os.killpg(pgid, 9)  # SIGKILL
+                    return True
+                except (ProcessLookupError, OSError):
+                    pass
+        return False
+
     def suspend_current_command(self) -> bool:
         """
         Suspend the currently running command (equivalent to Ctrl-Z).
@@ -685,6 +705,16 @@ class ShellActor:
             # Create a pseudo-terminal
             master_fd, slave_fd = pty.openpty()
             
+            # Prepare preexec to make the child a session leader and set controlling TTY
+            def _preexec_with_ctty(fd: int):
+                def _inner():
+                    os.setsid()
+                    try:
+                        fcntl.ioctl(fd, termios.TIOCSCTTY, 0)
+                    except Exception:
+                        pass
+                return _inner
+
             process = subprocess.Popen(
                 command,
                 shell=True,
@@ -694,7 +724,7 @@ class ShellActor:
                 text=False,  # Use bytes mode for pty
                 cwd=self.cwd,
                 env=env,
-                preexec_fn=os.setsid,
+                preexec_fn=_preexec_with_ctty(slave_fd),
                 close_fds=True
             )
             
@@ -839,6 +869,27 @@ class ShellActor:
                 'returncode': None,
                 'error': f"Error reading output: {str(e)}"
             }
+
+    def signal_interactive_process(self, session_id: str, sig: int = 2) -> Dict:
+        """
+        Send a signal to the interactive process group (default SIGINT=2).
+
+        Returns:
+            Dict with 'success', 'error' keys
+        """
+        try:
+            if session_id not in self.interactive_processes:
+                return {'success': False, 'error': f"No interactive session found: {session_id}"}
+            process = self.interactive_processes[session_id]['process']
+            if process.poll() is not None:
+                return {'success': False, 'error': 'Process already terminated'}
+            try:
+                os.killpg(os.getpgid(process.pid), sig)
+                return {'success': True, 'error': None}
+            except Exception as e:
+                return {'success': False, 'error': str(e)}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
 
     def terminate_interactive_command(self, session_id: str) -> Dict:
         """

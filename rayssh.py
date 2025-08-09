@@ -12,6 +12,7 @@ import termios
 import threading
 import time
 import tty
+import select
 
 import ray
 
@@ -47,6 +48,7 @@ class RaySSHClient:
         self.shutdown_event = threading.Event()
         self.friendly_workspace_path = None  # Track workspace symlink for cleanup
         self.uploaded_workspace_active = False  # Whether a temporary uploaded workspace is active
+        self._interrupt_flag = False  # Set by SIGINT to allow non-blocking interruption
         # Check if we're in remote mode (using RAY_ADDRESS)
         ray_address_from_env = os.environ.get('RAY_ADDRESS')
         self.is_remote_mode = (ray_address_from_env and node_arg == ray_address_from_env)
@@ -63,27 +65,24 @@ class RaySSHClient:
         if self.current_command_future and not self.current_command_future.done():
             # Interrupt the currently running command on the remote shell
             try:
-                ray.get(self.shell_actor.interrupt_current_command.remote())
-                print("\n^C")
-            except Exception as e:
-                print(f"\nWarning: Could not interrupt command: {e}")
-                # Force cancel the future to prevent hanging
                 try:
-                    self.current_command_future.cancel()
+                    self.shell_actor.interrupt_current_command.remote()
                 except Exception:
                     pass
+            finally:
+                # Propagate to abort blocking waits (e.g., input or ray.get)
+                raise KeyboardInterrupt
         elif self.current_interactive_session:
             # Interrupt the interactive session instead of exiting shell
             try:
-                ray.get(self.shell_actor.terminate_interactive_command.remote(self.current_interactive_session))
-                print("\n^C")
+                # Fire and forget; do not block here
+                self.shell_actor.terminate_interactive_command.remote(self.current_interactive_session)
                 self.current_interactive_session = None
-            except Exception:
-                pass
+            finally:
+                raise KeyboardInterrupt
         else:
-            # No command running, exit the shell
-            print("\n👋 Exiting...")
-            self.shutdown_event.set()
+            # At idle prompt: just raise to abort input() and discard current line
+            raise KeyboardInterrupt
 
     def _handle_sigterm(self, signum, frame):
         """Handle SIGTERM."""
@@ -105,11 +104,12 @@ class RaySSHClient:
                 abs_working_dir = os.path.abspath(self.working_dir)
                 print(f"🌐 Connecting to remote cluster and uploading {os.path.basename(abs_working_dir)}...")
             else:
-                print(f"🌐 Connecting to remote cluster...")
+                print(f"🌐 Initiating Ray client connection...")
                 
             ensure_ray_initialized(ray_address=self.node_arg, working_dir=self.working_dir)
             
             # Deploy shell actor for remote mode
+            print(f"🌐 Deploying shell actor to remote...")
             self.shell_actor = ShellActor.remote()
             
             # Verify the actor is running and get node info
@@ -129,13 +129,13 @@ class RaySSHClient:
                     # Store for cleanup later
                     self.friendly_workspace_path = workspace_info['friendly_path']
                     self.uploaded_workspace_active = True
-                    print(f"✅ Remote shell ready at ~/.rayssh/workdirs/{workspace_info['project_name']} on {node_info['hostname']}")
+                    print(f"🔗 Remote shell ready at ~/.rayssh/workdirs/{workspace_info['project_name']} on {node_info['hostname']}")
                     print("⚠️ Note: This workspace is temporary. Changes stay if you keep the session, but uploads are cleaned by Ray when sessions end.")
                 else:
-                    print(f"✅ Remote shell ready on {node_info['hostname']}")
+                    print(f"🔗 Remote shell ready on {node_info['hostname']}")
                     print(f"⚠️  Could not create friendly workspace link: {workspace_info.get('error', 'Unknown error')}")
             else:
-                print(f"✅ Remote shell ready on {node_info['hostname']}")
+                print(f"🔗 Remote shell ready on {node_info['hostname']}")
             print()
             
             return True
@@ -210,10 +210,10 @@ class RaySSHClient:
         except Exception:
             return "rayssh$ "
 
-    def _setup_tab_completion(self):
+    def _setup_tab_completion(self) -> bool:
         """Set up tab completion for file names."""
         if not READLINE_AVAILABLE:
-            return
+            return False
 
         # Lightweight in-memory cache for the last directory listing
         last_listing = {
@@ -332,7 +332,9 @@ class RaySSHClient:
             readline.set_completer_delims(' \t\n;|&()<>')
         except Exception:
             # If readline setup fails, continue without tab completion
-            pass
+            return False
+
+        return True
 
     def _cleanup_tab_completion(self):
         """Clean up tab completion."""
@@ -514,12 +516,15 @@ class RaySSHClient:
 
             session_id = start_result['session_id']
             self.current_interactive_session = session_id  # Track for Ctrl-C handling
-            print("⚡ Interactive session started (Ctrl-C to interrupt)")
+            print(f"🔄 Interactive session started")
+            # print("⚡ Interactive session started (Ctrl-C to interrupt)")
             print("-" * 60)
 
             try:
                 # Use threading for concurrent input/output handling
                 input_queue = queue.Queue()
+                # Ensure stale future is cleared so main loop reflects idle state
+                self.current_command_future = None
 
                 def input_reader():
                     """Read input from stdin in separate thread with no local echo"""
@@ -529,21 +534,29 @@ class RaySSHClient:
                     try:
                         # Set raw mode but keep some basic terminal features
                         new_settings = termios.tcgetattr(fd)
-                        new_settings[3] &= ~(termios.ECHO | termios.ICANON)  # Disable echo and canonical mode
+                        new_settings[3] &= ~(termios.ECHO | termios.ICANON | termios.ISIG)  # Disable echo, canonical mode, and local signals
                         new_settings[6][termios.VMIN] = 1  # Minimum characters to read
                         new_settings[6][termios.VTIME] = 0  # Timeout
                         termios.tcsetattr(fd, termios.TCSADRAIN, new_settings)
                         
                         while self.current_interactive_session == session_id:
                             try:
+                                # Non-blocking poll for input to allow timely exit
+                                rlist, _, _ = select.select([sys.stdin], [], [], 0.05)
+                                if not rlist:
+                                    continue
                                 char = sys.stdin.read(1)
                                 if not char:
                                     break
                                 
                                 # Send each character immediately to let remote PTY handle echoing
                                 if char == '\x03':  # Ctrl-C
-                                    input_queue.put(None)
-                                    break
+                                    # Ask remote to deliver SIGINT to the foreground process group
+                                    try:
+                                        ray.get(self.shell_actor.signal_interactive_process.remote(session_id, 2))
+                                    except Exception:
+                                        pass
+                                    continue
                                 elif char == '\x04':  # Ctrl-D (EOF)
                                     input_queue.put(None)
                                     break
@@ -570,7 +583,7 @@ class RaySSHClient:
 
                 while not finished and not self.shutdown_event.is_set() and self.current_interactive_session:
                     # Read output from remote process
-                    output_result = ray.get(self.shell_actor.read_output_chunk.remote(session_id, 0.1))
+                    output_result = ray.get(self.shell_actor.read_output_chunk.remote(session_id, 0.05))
 
                     if output_result['success']:
                         # Display any output
@@ -600,6 +613,9 @@ class RaySSHClient:
 
                             # Send input to remote process
                             send_result = ray.get(self.shell_actor.send_stdin_data.remote(session_id, user_input))
+                            # When we forward Ctrl-C, do not auto-finish session
+                            if user_input == '\x03':
+                                continue
                             if not send_result['success']:
                                 if "terminated" in send_result['error']:
                                     finished = True
@@ -623,6 +639,16 @@ class RaySSHClient:
                 self.current_interactive_session = None
                 try:
                     ray.get(self.shell_actor.terminate_interactive_command.remote(session_id))
+                except Exception:
+                    pass
+                # Ensure input reader restored terminal and drain any leftover keystrokes
+                try:
+                    input_thread.join(timeout=0.2)
+                except Exception:
+                    pass
+                try:
+                    fd = sys.stdin.fileno()
+                    termios.tcflush(fd, termios.TCIFLUSH)
                 except Exception:
                     pass
                 print("-" * 60)
@@ -681,13 +707,12 @@ class RaySSHClient:
 
     def run_interactive_shell(self):
         """Run the main interactive shell loop."""
-        print("Connected! Type 'exit' or 'quit' to disconnect, Ctrl-C to interrupt commands, Ctrl-D to exit.")
-        if READLINE_AVAILABLE:
-            print("Tab completion is enabled for file names.")
-        print()
+        print("✅ Connected! Type 'exit' or 'quit' to disconnect, Ctrl-C to interrupt, Ctrl-D to exit.")
 
         # Set up tab completion
-        self._setup_tab_completion()
+        if self._setup_tab_completion():
+            print("🔍 Tab completion is enabled for file names.")
+        print()
 
         try:
             while not self.shutdown_event.is_set():
@@ -695,20 +720,32 @@ class RaySSHClient:
                     # Get and display prompt
                     prompt = self.get_prompt()
 
-                    # Read command with proper handling of Ctrl-D
+                    # Read command with proper handling of Ctrl-D / Ctrl-C
                     try:
                         command = input(prompt)
                     except EOFError:
-                        # Ctrl-D pressed
                         print("\n👋 Exiting...")
                         break
+                    except KeyboardInterrupt:
+                        # Discard current line; show a fresh prompt on next loop
+                        print()
+                        continue
 
                     # Execute command
-                    if not self.execute_command(command):
-                        break
+                    try:
+                        if not self.execute_command(command):
+                            break
+                    except KeyboardInterrupt:
+                        # Print caret-C then continue to repaint prompt
+                        print("^C")
+                        continue
 
                 except KeyboardInterrupt:
-                    # This should be handled by signal handler, but just in case
+                    # Just in case; prompt will repaint
+                    continue
+                except Exception as e:
+                    # Keep shell alive on unexpected error
+                    print(f"Shell loop error: {e}", file=sys.stderr)
                     continue
 
         except Exception as e:
@@ -1202,10 +1239,7 @@ def main():
     # Parse command line arguments
     if len(sys.argv) < 2:
         # No arguments
-        if ray_address_env:
-            # RAY_ADDRESS is set - connect in remote mode without upload
-            print(f"🌐 Connecting to remote cluster...")
-            
+        if ray_address_env:            
             client = RaySSHClient(ray_address_env, working_dir=None)
             
             try:
@@ -1269,7 +1303,7 @@ def main():
                 # Check if it's a directory and RAY_ADDRESS is set
                 elif ray_address_env and os.path.exists(argument) and os.path.isdir(argument):
                     # It's a directory and we're in remote mode - upload and connect
-                    print(f"🌐 Connecting to remote cluster...")
+                    print(f"🌐 Initiating Ray client connection...")
                     print(f"📦 Uploading directory: {os.path.abspath(argument)}")
                     
                     client = RaySSHClient(ray_address_env, working_dir=argument)
