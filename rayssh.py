@@ -540,52 +540,81 @@ class RaySSHClient:
                         new_settings[6][termios.VTIME] = 0  # Timeout
                         termios.tcsetattr(fd, termios.TCSADRAIN, new_settings)
                         
+                        # Batch keystrokes into small chunks
+                        buf = []
+                        last_flush = time.time()
+                        FLUSH_AFTER_SEC = 0.015  # 15ms
+                        MAX_CHUNK = 256
                         while self.current_interactive_session == session_id:
                             try:
                                 # Non-blocking poll for input to allow timely exit
                                 rlist, _, _ = select.select([sys.stdin], [], [], 0.05)
-                                if not rlist:
-                                    continue
-                                char = sys.stdin.read(1)
-                                if not char:
-                                    break
-                                
-                                # Send each character immediately to let remote PTY handle echoing
-                                if char == '\x03':  # Ctrl-C
-                                    # Ask remote to deliver SIGINT to the foreground process group
-                                    try:
-                                        ray.get(self.shell_actor.signal_interactive_process.remote(session_id, 2))
-                                    except Exception:
-                                        pass
-                                    continue
-                                elif char == '\x04':  # Ctrl-D (EOF)
-                                    input_queue.put(None)
-                                    break
-                                else:
-                                    # Send character immediately (including Enter, Backspace, etc.)
-                                    input_queue.put(char)
-                                    
+                                now_t = time.time()
+                                if rlist:
+                                    char = sys.stdin.read(1)
+                                    if not char:
+                                        break
+                                    # Ctrl-C: signal remote, do not end local session
+                                    if char == '\x03':
+                                        try:
+                                            ray.get(self.shell_actor.signal_interactive_process.remote(session_id, 2))
+                                        except Exception:
+                                            pass
+                                        # Flush any buffered text before continuing
+                                        if buf:
+                                            input_queue.put(''.join(buf))
+                                            buf.clear()
+                                            last_flush = now_t
+                                        continue
+                                    # Ctrl-D: EOF -> end session
+                                    if char == '\x04':
+                                        if buf:
+                                            input_queue.put(''.join(buf))
+                                            buf.clear()
+                                        input_queue.put(None)
+                                        break
+                                    buf.append(char)
+                                    # Flush on newline or chunk size
+                                    if char in ('\n', '\r') or len(buf) >= MAX_CHUNK:
+                                        input_queue.put(''.join(buf))
+                                        buf.clear()
+                                        last_flush = now_t
+                                # Time-based flush
+                                if buf and (now_t - last_flush) >= FLUSH_AFTER_SEC:
+                                    input_queue.put(''.join(buf))
+                                    buf.clear()
+                                    last_flush = now_t
                             except (EOFError, KeyboardInterrupt):
+                                if buf:
+                                    input_queue.put(''.join(buf))
+                                    buf.clear()
                                 input_queue.put(None)
                                 break
                             except Exception:
+                                # On unexpected error, flush buffer and exit loop
+                                if buf:
+                                    input_queue.put(''.join(buf))
+                                    buf.clear()
                                 break
-                                
+                          
                     finally:
                         # Restore terminal settings
                         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-
+ 
                 # Start input reader thread
                 input_thread = threading.Thread(target=input_reader, daemon=True)
                 input_thread.start()
-
+ 
                 # Main interactive loop
                 finished = False
-
+                poll_timeout = 0.05  # adaptive poll timeout
+                MIN_TIMEOUT = 0.02
+                MAX_TIMEOUT = 0.25
+ 
                 while not finished and not self.shutdown_event.is_set() and self.current_interactive_session:
-                    # Read output from remote process
-                    output_result = ray.get(self.shell_actor.read_output_chunk.remote(session_id, 0.05))
-
+                    # Read output from remote process with adaptive timeout
+                    output_result = ray.get(self.shell_actor.read_output_chunk.remote(session_id, poll_timeout))
+ 
                     if output_result['success']:
                         # Display any output
                         if output_result['stdout']:
@@ -596,14 +625,19 @@ class RaySSHClient:
                             filtered_stderr = self._filter_raylet_warnings(output_result['stderr'])
                             if filtered_stderr:
                                 print(filtered_stderr, end='', flush=True, file=sys.stderr)
-
+ 
                         finished = output_result['finished']
                         if finished:
                             returncode = output_result['returncode']
                             if returncode and returncode != 0:
                                 print(f"\nRaySSH: Process exited with code {returncode}")
                             break
-
+                        # If we got output, tighten polling
+                        if output_result['stdout'] or output_result['stderr']:
+                            poll_timeout = max(MIN_TIMEOUT, poll_timeout * 0.6)
+                        else:
+                            poll_timeout = min(MAX_TIMEOUT, poll_timeout * 1.4)
+ 
                     # Check for user input (non-blocking)
                     try:
                         while not input_queue.empty():
@@ -611,12 +645,9 @@ class RaySSHClient:
                             if user_input is None:  # EOF or interrupt
                                 finished = True
                                 break
-
+ 
                             # Send input to remote process
                             send_result = ray.get(self.shell_actor.send_stdin_data.remote(session_id, user_input))
-                            # When we forward Ctrl-C, do not auto-finish session
-                            if user_input == '\x03':
-                                continue
                             if not send_result['success']:
                                 if "terminated" in send_result['error']:
                                     finished = True
@@ -625,9 +656,9 @@ class RaySSHClient:
                                     print(f"Error sending input: {send_result['error']}", file=sys.stderr)
                     except queue.Empty:
                         pass
-
+ 
                     # Small delay to prevent busy waiting
-                    time.sleep(0.01)
+                    time.sleep(0.005)
 
             except KeyboardInterrupt:
                 print()
