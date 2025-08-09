@@ -2,6 +2,7 @@ import ipaddress
 import os
 import re
 from typing import Dict, List, Optional
+from functools import lru_cache
 
 import ray
 
@@ -35,16 +36,18 @@ def parse_node_argument(node_arg: str) -> tuple[str, str]:
 
 
 def get_ray_cluster_nodes() -> List[Dict]:
-    """Get information about all nodes in the Ray cluster."""
-    try:
-        return ray.nodes()
-    except Exception as e:
-        raise RuntimeError(f"Failed to get Ray cluster nodes: {e}") from e
+    """Get information about all nodes in the Ray cluster (alive only), normalized.
+
+    Uses the State API helper to ensure a single source of truth.
+    Assumes Ray has already been initialized by the caller.
+    """
+    nodes, _ = fetch_cluster_nodes_via_state()
+    return nodes
 
 
 def find_node_by_ip(target_ip: str) -> Optional[Dict]:
     """Find a Ray node by its IP address."""
-    nodes = get_ray_cluster_nodes()
+    nodes, _ = fetch_cluster_nodes_via_state()
 
     for node in nodes:
         # Check both NodeManagerAddress and internal/external IPs
@@ -62,7 +65,7 @@ def find_node_by_ip(target_ip: str) -> Optional[Dict]:
 
 def find_node_by_id(target_node_id: str) -> Optional[Dict]:
     """Find a Ray node by its node ID."""
-    nodes = get_ray_cluster_nodes()
+    nodes, _ = fetch_cluster_nodes_via_state()
 
     for node in nodes:
         node_id = node.get('NodeID')
@@ -163,3 +166,79 @@ def get_node_resources(node_info: Dict) -> Dict:
         'node_ip': node_info.get('NodeManagerAddress', ''),
         'alive': node_info.get('Alive', False)
     }
+
+
+def get_head_node_id() -> Optional[str]:
+    """Return the head node's NodeID using Ray State API filters.
+
+    Assumes Ray has already been initialized by the caller.
+    """
+    try:
+        from ray.util import state as ray_state  # type: ignore
+        nodes = ray_state.list_nodes(filters=[("is_head_node", "=", True)])
+        assert len(nodes) == 1, "There should be exactly one head node"
+        head = nodes[0]
+        # Support both object with attribute and dict-like
+        node_id = getattr(head, "node_id", None)
+        if not node_id and isinstance(head, dict):
+            node_id = head.get("node_id") or head.get("NodeID")
+        return node_id
+    except Exception as e:
+        print(f"Failed to determine head node via Ray State API: {e}")
+        raise RuntimeError(f"Failed to determine head node via Ray State API: {e}")
+
+
+@lru_cache(maxsize=1)
+def fetch_cluster_nodes_via_state() -> tuple[list[Dict], Optional[str]]:
+    """Fetch Ray nodes once via State API and return (normalized_nodes, head_node_id).
+
+    - Assumes Ray has already been initialized by the caller.
+    - Normalizes each node to keys: 'NodeID', 'NodeManagerAddress', 'Alive', 'Resources'.
+    - Determines head_node_id from the same list by checking common flags.
+    """
+    from ray.util import state as ray_state  # type: ignore
+    raw_nodes = ray_state.list_nodes(address="auto", detail=True)
+    if not raw_nodes:
+        return [], None
+
+    head_node_id: Optional[str] = None
+    for n in raw_nodes:
+        # Object-like
+        if getattr(n, "is_head_node", False) or getattr(n, "node_type", None) == "head":
+            head_node_id = getattr(n, "node_id", None)
+            break
+        # Dict-like
+        if isinstance(n, dict):
+            if n.get("is_head_node") or n.get("node_type") == "head" or n.get("nodeType") == "head" or n.get("is_head") is True:
+                head_node_id = n.get("node_id") or n.get("NodeID")
+                break
+
+    nodes: list[Dict] = []
+    for n in raw_nodes:
+        if hasattr(n, "to_dict"):
+            d = n.to_dict()
+        elif isinstance(n, dict):
+            d = n
+        else:
+            d = {
+                'NodeID': getattr(n, 'node_id', None),
+                'NodeManagerAddress': getattr(n, 'node_ip', None),
+                'Alive': getattr(n, 'state', '').upper() == 'ALIVE',
+                'Resources': getattr(n, 'resources_total', {}) or {},
+            }
+
+        node_id = d.get('NodeID') or d.get('node_id')
+        node_ip = d.get('NodeManagerAddress') or d.get('node_ip')
+        state_alive = d.get('Alive') if 'Alive' in d else (str(d.get('state', '')).upper() == 'ALIVE')
+        resources = d.get('Resources') or d.get('resources_total') or {}
+
+        nodes.append({
+            'NodeID': node_id,
+            'NodeManagerAddress': node_ip,
+            'Alive': bool(state_alive),
+            'Resources': resources,
+        })
+
+    # Only return alive nodes
+    nodes = [node for node in nodes if node.get('Alive', False)]
+    return nodes, head_node_id

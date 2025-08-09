@@ -30,7 +30,6 @@ from utils import (
     ensure_ray_initialized,
     find_target_node,
     get_node_resources,
-    get_ray_cluster_nodes,
 )
 
 
@@ -820,32 +819,19 @@ def get_ordered_nodes():
     Returns (nodes, head_node_index) where nodes is list of alive nodes
     and head_node_index is the index of the head node.
     """
-    # Ensure Ray is initialized
-    ensure_ray_initialized(ray_address=os.environ.get('RAY_ADDRESS'), connect_only=True)
-
-    # Get all nodes in the cluster
-    all_nodes = get_ray_cluster_nodes()
-
-    if not all_nodes:
-        return [], -1
-
-    # Filter to only show alive nodes
-    nodes = [node for node in all_nodes if node.get('Alive', False)]
-
+    # Use shared State API helper; assume Ray is already initialized by callers
+    from utils import fetch_cluster_nodes_via_state
+    nodes, head_node_id = fetch_cluster_nodes_via_state()
     if not nodes:
         return [], -1
 
-    # Detect head node (same logic as print_nodes_table)
-    head_node_id = None
-    head_node_index = -1
-
-    for i, node in enumerate(nodes):
-        resources = node.get('Resources', {})
-        # Head node typically has 'node:' resources or is the first node
-        if any(key.startswith('node:') for key in resources.keys()) or head_node_id is None:
-            head_node_id = node.get('NodeID')
-            head_node_index = i
-            break
+    # Compute head index in this list (fallback to 0 if not found)
+    head_node_index = 0
+    if head_node_id:
+        for i, node in enumerate(nodes):
+            if node.get('NodeID') == head_node_id:
+                head_node_index = i
+                break
 
     return nodes, head_node_index
 
@@ -890,7 +876,7 @@ def get_random_worker_node():
     Raises ValueError if only head node exists.
     """
     nodes, head_node_index = get_ordered_nodes()
-    
+
     if not nodes:
         raise ValueError("No alive Ray nodes found in the cluster")
     
@@ -911,67 +897,43 @@ def get_random_worker_node():
 def print_nodes_table():
     """Print a table of available Ray nodes."""
     try:
-        # Ensure Ray is initialized
-        ensure_ray_initialized(ray_address=os.environ.get('RAY_ADDRESS'), connect_only=True)
-
-        # Get all nodes in the cluster
-        all_nodes = get_ray_cluster_nodes()
-
-        if not all_nodes:
-            print("🚫 No Ray nodes found in the cluster.")
-            return
-
-        # Filter to only show alive nodes
-        nodes = [node for node in all_nodes if node.get('Alive', False)]
-
+        # Fetch and normalize using shared helper
+        from utils import fetch_cluster_nodes_via_state
+        nodes, head_node_id = fetch_cluster_nodes_via_state()
         if not nodes:
-            print("🚫 No alive Ray nodes found in the cluster.")
-            return
+            print("🚫 No Ray nodes found in the cluster.")
+            return 0
 
         print(f"🌐 Ray Cluster Nodes ({len(nodes)} alive)")
         print("=" * 85)
 
-        # Print table header
+        # Header
         print(f"{'📍 Node':<12} {'🌍 IP Address':<16} {'🆔 ID':<8} {'🖥️  CPU':<12} {'🎮 GPU':<12} {'💾 Memory':<12}")
         print("-" * 85)
 
-        # Detect head node (usually the first node or one with special characteristics)
-        head_node_id = None
-        for node in nodes:
-            resources = node.get('Resources', {})
-            # Head node typically has 'node:' resources or is the first node
-            if any(key.startswith('node:') for key in resources.keys()) or head_node_id is None:
-                head_node_id = node.get('NodeID')
-                break
-
-        # Print each node in table format
+        # Print rows
         for i, node in enumerate(nodes, 1):
-            node_ip = node.get('NodeManagerAddress', 'N/A')
-            full_node_id = node.get('NodeID', 'N/A')
-            node_id = f"{full_node_id[:6]}..." if full_node_id != 'N/A' else 'N/A'  # Show first 6 chars with ellipsis
+            node_ip = node.get('NodeManagerAddress', 'N/A') or 'N/A'
+            full_node_id = node.get('NodeID', 'N/A') or 'N/A'
+            node_id_short = f"{full_node_id[:6]}..." if full_node_id != 'N/A' else 'N/A'
 
-            # Mark head node
-            is_head_node = node.get('NodeID') == head_node_id
+            is_head_node = (full_node_id == head_node_id)
             node_label = f"{'👑 Head' if is_head_node else str(i)}"
 
-            # Get resources
-            resources = node.get('Resources', {})
-
-            # CPU usage formatting
+            resources = node.get('Resources', {}) or {}
             cpu_total = int(resources.get('CPU', 0)) if resources.get('CPU', 0) else 0
-            cpu_display = f"{cpu_total}" if cpu_total > 0 else "0"
-
-            # GPU usage formatting
             gpu_total = int(resources.get('GPU', 0)) if resources.get('GPU', 0) else 0
-            gpu_display = f"{gpu_total}" if gpu_total > 0 else "0"
 
-            # Memory formatting
-            memory_bytes = resources.get('memory', 0)
-            memory_gb = f"{memory_bytes / (1024**3):.1f}GB" if memory_bytes > 0 else "0GB"
+            # memory reported may be bytes; format to GB
+            memory_val = resources.get('memory', 0) or 0
+            try:
+                memory_gb = f"{(float(memory_val) / (1024**3)):.1f}GB" if float(memory_val) > 0 else "0GB"
+            except Exception:
+                memory_gb = "0GB"
 
-            print(f"{node_label:<12} {node_ip:<16} {node_id:<8} {cpu_display:<12} {gpu_display:<12} {memory_gb:<12}")
+            print(f"{node_label:<12} {node_ip:<16} {node_id_short:<8} {cpu_total:<12} {gpu_total:<12} {memory_gb:<12}")
 
-            # Print additional special resources if they exist
+            # Special resources
             special_resources = []
             for key, value in sorted(resources.items()):
                 if key not in ['CPU', 'GPU', 'memory', 'object_store_memory'] and not key.startswith('node:'):
@@ -979,7 +941,6 @@ def print_nodes_table():
                         special_resources.append(f"⚡ {key}: {int(value) if isinstance(value, float) and value.is_integer() else value}")
                     else:
                         special_resources.append(f"🔧 {key}: {int(value) if isinstance(value, float) and value.is_integer() else value}")
-
             if special_resources:
                 print(f"{'':12} {'└─':16} {', '.join(special_resources)}")
 
@@ -1044,7 +1005,7 @@ def interactive_node_selector():
     Returns the selected node's IP address or None if cancelled.
     """
     try:
-        # Get nodes in the same order as --ls table
+        # Get nodes in the same order as --ls table (via State API helper)
         nodes, head_node_index = get_ordered_nodes()
 
         if not nodes:
