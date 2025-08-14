@@ -55,6 +55,8 @@ rayssh --help
 - `rayssh <file>` - Submit file as Ray job
 - `rayssh lab [-q] [path]` - Launch Jupyter Lab on a worker node; tails log for URL. With `-q`, exit after showing link.
   - If no worker is available, you can run: `rayssh -0 lab [-q] [path]` to place Lab on the head node.
+- `rayssh code [-q] [path]` - Launch code-server (VS Code) on a worker node; behaves like `lab`.
+  - If no worker is available, you can run: `rayssh -0 code [-q] [path]` to place it on the head node.
 - `rayssh -l` - Interactive node selection
 - `rayssh --ls` - Print nodes table
 
@@ -116,6 +118,21 @@ ray job stop <job_id>
 
 **Mixed workflow:**
 ### 3. 🧪 Jupyter Lab on the Cluster
+### 4. 🧰 VS Code (code-server) on the Cluster
+
+```bash
+# Local cluster
+rayssh code           # Blocks and tails log; Ctrl-C stops server
+rayssh code -q        # Show link and exit; server keeps running
+
+# Remote mode with workspace upload
+export RAY_ADDRESS=ray://gpu-cluster.remote:10001
+rayssh code ~/my-project
+```
+
+Notes:
+- code-server binds like Jupyter; on macOS, 80 becomes 8888 automatically.
+- A password is generated and printed on first start; reuse prints the same.
 
 Start a Jupyter Lab on a worker node that other machines can access:
 

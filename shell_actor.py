@@ -30,10 +30,10 @@ class ShellActor:
     def get_node_info(self) -> Dict:
         """Get information about the current node."""
         return {
-            'hostname': os.uname().nodename,
-            'cwd': self.cwd,
-            'pid': os.getpid(),
-            'user': os.environ.get('USER', 'unknown')
+            "hostname": os.uname().nodename,
+            "cwd": self.cwd,
+            "pid": os.getpid(),
+            "user": os.environ.get("USER", "unknown"),
         }
 
     def bootstrap(self, project_name: Optional[str] = None) -> Dict:
@@ -49,86 +49,87 @@ class ShellActor:
         try:
             info = self.get_node_info()
         except Exception as e:
-            info = {'error': str(e)}
+            info = {"error": str(e)}
 
         workspace_info = None
         if project_name:
             try:
                 workspace_info = self.setup_friendly_workspace(project_name)
             except Exception as e:
-                workspace_info = {'success': False, 'error': str(e)}
+                workspace_info = {"success": False, "error": str(e)}
 
         return {
-            'node_info': info,
-            'workspace_info': workspace_info,
+            "node_info": info,
+            "workspace_info": workspace_info,
         }
 
     def setup_friendly_workspace(self, project_name: str = None) -> Dict:
         """
         Create a friendly soft link to the uploaded directory and change to it.
-        
+
         Args:
             project_name: Name for the workspace link (defaults to 'workspace')
-            
+
         Returns:
             Dict with 'friendly_path', 'original_path', 'success' keys
         """
         try:
             # Default project name
             if not project_name:
-                project_name = 'workspace'
-            
+                project_name = "workspace"
+
             # Get home directory and create rayssh workdirs structure
-            home_dir = os.path.expanduser('~')
-            rayssh_dir = os.path.join(home_dir, '.rayssh')
-            workdirs_path = os.path.join(rayssh_dir, 'workdirs')
-            
+            home_dir = os.path.expanduser("~")
+            rayssh_dir = os.path.join(home_dir, ".rayssh")
+            workdirs_path = os.path.join(rayssh_dir, "workdirs")
+
             # Create directories if they don't exist
             os.makedirs(workdirs_path, exist_ok=True)
-            
+
             # Create friendly link path in workdirs
             friendly_path = os.path.join(workdirs_path, project_name)
             original_path = self.cwd
-            
+
             # Remove existing link if it exists
             if os.path.islink(friendly_path):
                 os.unlink(friendly_path)
             elif os.path.exists(friendly_path):
                 # If it's a real directory, use a different name
                 import time
+
                 timestamp = int(time.time())
                 project_name = f"{project_name}_{timestamp}"
                 friendly_path = os.path.join(workdirs_path, project_name)
-            
+
             # Create soft link
             os.symlink(original_path, friendly_path)
-            
+
             # Change to the friendly path
             self.cwd = friendly_path
-            
+
             return {
-                'friendly_path': friendly_path,
-                'original_path': original_path,
-                'project_name': project_name,
-                'success': True
+                "friendly_path": friendly_path,
+                "original_path": original_path,
+                "project_name": project_name,
+                "success": True,
             }
-            
+
         except Exception as e:
             return {
-                'friendly_path': None,
-                'original_path': self.cwd,
-                'project_name': project_name,
-                'success': False,
-                'error': str(e)
+                "friendly_path": None,
+                "original_path": self.cwd,
+                "project_name": project_name,
+                "success": False,
+                "error": str(e),
             }
 
     def cleanup_workspace(self, friendly_path: str) -> bool:
         """
         Clean up the symlink when session ends.
-        
+
         Args:
             friendly_path: Path to the symlink to remove
-            
+
         Returns:
             bool: True if cleanup successful, False otherwise
         """
@@ -172,25 +173,20 @@ class ShellActor:
             Dict with 'stdout', 'stderr', 'returncode', 'cwd' keys
         """
         if not command.strip():
-            return {
-                'stdout': '',
-                'stderr': '',
-                'returncode': 0,
-                'cwd': self.cwd
-            }
+            return {"stdout": "", "stderr": "", "returncode": 0, "cwd": self.cwd}
 
         # Handle built-in commands
-        if command.strip().startswith('cd '):
+        if command.strip().startswith("cd "):
             return self._handle_cd_command(command)
-        elif command.strip() in ['pwd']:
+        elif command.strip() in ["pwd"]:
             return self._handle_pwd_command()
-        elif command.strip().startswith('export '):
+        elif command.strip().startswith("export "):
             return self._handle_export_command(command)
-        elif command.strip().startswith('pushd ') or command.strip() == 'pushd':
+        elif command.strip().startswith("pushd ") or command.strip() == "pushd":
             return self._handle_pushd_command(command)
-        elif command.strip() == 'popd':
+        elif command.strip() == "popd":
             return self._handle_popd_command()
-        elif command.strip() == 'dirs':
+        elif command.strip() == "dirs":
             return self._handle_dirs_command()
 
         # Execute external command
@@ -201,7 +197,7 @@ class ShellActor:
         parts = command.strip().split(None, 1)
         if len(parts) == 1:
             # cd with no arguments goes to home directory
-            target_dir = os.path.expanduser('~')
+            target_dir = os.path.expanduser("~")
         else:
             target_dir = os.path.expanduser(parts[1])
 
@@ -213,27 +209,22 @@ class ShellActor:
 
         if os.path.isdir(target_dir):
             self.cwd = target_dir
-            return {
-                'stdout': '',
-                'stderr': '',
-                'returncode': 0,
-                'cwd': self.cwd
-            }
+            return {"stdout": "", "stderr": "", "returncode": 0, "cwd": self.cwd}
         else:
             return {
-                'stdout': '',
-                'stderr': f"cd: {target_dir}: No such file or directory\n",
-                'returncode': 1,
-                'cwd': self.cwd
+                "stdout": "",
+                "stderr": f"cd: {target_dir}: No such file or directory\n",
+                "returncode": 1,
+                "cwd": self.cwd,
             }
 
     def _handle_pwd_command(self) -> Dict:
         """Handle the 'pwd' built-in command."""
         return {
-            'stdout': self.cwd + '\n',
-            'stderr': '',
-            'returncode': 0,
-            'cwd': self.cwd
+            "stdout": self.cwd + "\n",
+            "stderr": "",
+            "returncode": 0,
+            "cwd": self.cwd,
         }
 
     def _handle_export_command(self, command: str) -> Dict:
@@ -241,28 +232,23 @@ class ShellActor:
         parts = command.strip().split(None, 1)
         if len(parts) < 2:
             return {
-                'stdout': '',
-                'stderr': 'export: usage: export VAR=value\n',
-                'returncode': 1,
-                'cwd': self.cwd
+                "stdout": "",
+                "stderr": "export: usage: export VAR=value\n",
+                "returncode": 1,
+                "cwd": self.cwd,
             }
 
         assignment = parts[1]
-        if '=' in assignment:
-            var, value = assignment.split('=', 1)
+        if "=" in assignment:
+            var, value = assignment.split("=", 1)
             self.env[var] = value
-            return {
-                'stdout': '',
-                'stderr': '',
-                'returncode': 0,
-                'cwd': self.cwd
-            }
+            return {"stdout": "", "stderr": "", "returncode": 0, "cwd": self.cwd}
         else:
             return {
-                'stdout': '',
-                'stderr': 'export: usage: export VAR=value\n',
-                'returncode': 1,
-                'cwd': self.cwd
+                "stdout": "",
+                "stderr": "export: usage: export VAR=value\n",
+                "returncode": 1,
+                "cwd": self.cwd,
             }
 
     def _handle_pushd_command(self, command: str) -> Dict:
@@ -273,10 +259,10 @@ class ShellActor:
             # pushd with no arguments - swap top two directories on stack
             if len(self.dir_stack) == 0:
                 return {
-                    'stdout': '',
-                    'stderr': 'pushd: no other directory\n',
-                    'returncode': 1,
-                    'cwd': self.cwd
+                    "stdout": "",
+                    "stderr": "pushd: no other directory\n",
+                    "returncode": 1,
+                    "cwd": self.cwd,
                 }
 
             # Swap current directory with top of stack
@@ -287,21 +273,21 @@ class ShellActor:
             if os.path.isdir(top_dir):
                 self.cwd = top_dir
                 # Show the directory stack
-                stack_str = ' '.join([self.cwd] + list(reversed(self.dir_stack)))
+                stack_str = " ".join([self.cwd] + list(reversed(self.dir_stack)))
                 return {
-                    'stdout': stack_str + '\n',
-                    'stderr': '',
-                    'returncode': 0,
-                    'cwd': self.cwd
+                    "stdout": stack_str + "\n",
+                    "stderr": "",
+                    "returncode": 0,
+                    "cwd": self.cwd,
                 }
             else:
                 # Revert the stack change if directory doesn't exist
                 self.dir_stack[-1] = top_dir
                 return {
-                    'stdout': '',
-                    'stderr': f"pushd: {top_dir}: No such file or directory\n",
-                    'returncode': 1,
-                    'cwd': self.cwd
+                    "stdout": "",
+                    "stderr": f"pushd: {top_dir}: No such file or directory\n",
+                    "returncode": 1,
+                    "cwd": self.cwd,
                 }
         else:
             # pushd with directory argument
@@ -319,29 +305,29 @@ class ShellActor:
                 self.cwd = target_dir
 
                 # Show the directory stack
-                stack_str = ' '.join([self.cwd] + list(reversed(self.dir_stack)))
+                stack_str = " ".join([self.cwd] + list(reversed(self.dir_stack)))
                 return {
-                    'stdout': stack_str + '\n',
-                    'stderr': '',
-                    'returncode': 0,
-                    'cwd': self.cwd
+                    "stdout": stack_str + "\n",
+                    "stderr": "",
+                    "returncode": 0,
+                    "cwd": self.cwd,
                 }
             else:
                 return {
-                    'stdout': '',
-                    'stderr': f"pushd: {target_dir}: No such file or directory\n",
-                    'returncode': 1,
-                    'cwd': self.cwd
+                    "stdout": "",
+                    "stderr": f"pushd: {target_dir}: No such file or directory\n",
+                    "returncode": 1,
+                    "cwd": self.cwd,
                 }
 
     def _handle_popd_command(self) -> Dict:
         """Handle the 'popd' built-in command."""
         if len(self.dir_stack) == 0:
             return {
-                'stdout': '',
-                'stderr': 'popd: directory stack empty\n',
-                'returncode': 1,
-                'cwd': self.cwd
+                "stdout": "",
+                "stderr": "popd: directory stack empty\n",
+                "returncode": 1,
+                "cwd": self.cwd,
             }
 
         # Pop directory from stack
@@ -353,46 +339,48 @@ class ShellActor:
 
             # Show the directory stack if not empty
             if self.dir_stack:
-                stack_str = ' '.join([self.cwd] + list(reversed(self.dir_stack)))
+                stack_str = " ".join([self.cwd] + list(reversed(self.dir_stack)))
                 return {
-                    'stdout': stack_str + '\n',
-                    'stderr': '',
-                    'returncode': 0,
-                    'cwd': self.cwd
+                    "stdout": stack_str + "\n",
+                    "stderr": "",
+                    "returncode": 0,
+                    "cwd": self.cwd,
                 }
             else:
                 return {
-                    'stdout': self.cwd + '\n',
-                    'stderr': '',
-                    'returncode': 0,
-                    'cwd': self.cwd
+                    "stdout": self.cwd + "\n",
+                    "stderr": "",
+                    "returncode": 0,
+                    "cwd": self.cwd,
                 }
         else:
             # If popped directory doesn't exist, put it back and show error
             self.dir_stack.append(popped_dir)
             return {
-                'stdout': '',
-                'stderr': f"popd: {popped_dir}: No such file or directory\n",
-                'returncode': 1,
-                'cwd': self.cwd
+                "stdout": "",
+                "stderr": f"popd: {popped_dir}: No such file or directory\n",
+                "returncode": 1,
+                "cwd": self.cwd,
             }
 
     def _handle_dirs_command(self) -> Dict:
         """Handle the 'dirs' built-in command."""
         # Show the directory stack with current directory first
         if self.dir_stack:
-            stack_str = ' '.join([self.cwd] + list(reversed(self.dir_stack)))
+            stack_str = " ".join([self.cwd] + list(reversed(self.dir_stack)))
         else:
             stack_str = self.cwd
 
         return {
-            'stdout': stack_str + '\n',
-            'stderr': '',
-            'returncode': 0,
-            'cwd': self.cwd
+            "stdout": stack_str + "\n",
+            "stderr": "",
+            "returncode": 0,
+            "cwd": self.cwd,
         }
 
-    def _execute_external_command(self, command: str, timeout: Optional[float] = None) -> Dict:
+    def _execute_external_command(
+        self, command: str, timeout: Optional[float] = None
+    ) -> Dict:
         """Execute an external shell command."""
         try:
             # Start the process (acquire lock only for process creation)
@@ -405,7 +393,7 @@ class ShellActor:
                     text=True,
                     cwd=self.cwd,
                     env=self.env,
-                    preexec_fn=os.setsid  # Create new process group for signal handling
+                    preexec_fn=os.setsid,  # Create new process group for signal handling
                 )
                 # Store process reference for interrupt handling
                 current_process = self.running_process
@@ -429,18 +417,18 @@ class ShellActor:
                         self.running_process = None
 
             return {
-                'stdout': stdout,
-                'stderr': stderr,
-                'returncode': returncode,
-                'cwd': self.cwd
+                "stdout": stdout,
+                "stderr": stderr,
+                "returncode": returncode,
+                "cwd": self.cwd,
             }
 
         except Exception as e:
             return {
-                'stdout': '',
-                'stderr': f"Error executing command: {str(e)}\n",
-                'returncode': 1,
-                'cwd': self.cwd
+                "stdout": "",
+                "stderr": f"Error executing command: {str(e)}\n",
+                "returncode": 1,
+                "cwd": self.cwd,
             }
 
     def interrupt_current_command(self) -> bool:
@@ -534,7 +522,12 @@ class ShellActor:
         """Get all environment variables."""
         return self.env.copy()
 
-    def list_directory(self, path: Optional[str] = None, include_hidden: bool = True, max_entries: int = 5000) -> Dict:
+    def list_directory(
+        self,
+        path: Optional[str] = None,
+        include_hidden: bool = True,
+        max_entries: int = 5000,
+    ) -> Dict:
         """
         List directory entries quickly for autocomplete.
 
@@ -547,19 +540,23 @@ class ShellActor:
             Dict with 'success', 'entries' (list of {name, is_dir}), 'truncated' (bool), 'error' keys
         """
         try:
-            if not path or path == '.':
+            if not path or path == ".":
                 dir_path = self.cwd
             else:
                 expanded = os.path.expanduser(path)
-                dir_path = expanded if os.path.isabs(expanded) else os.path.join(self.cwd, expanded)
+                dir_path = (
+                    expanded
+                    if os.path.isabs(expanded)
+                    else os.path.join(self.cwd, expanded)
+                )
             dir_path = os.path.normpath(dir_path)
 
             if not os.path.isdir(dir_path):
                 return {
-                    'success': False,
-                    'entries': [],
-                    'truncated': False,
-                    'error': f"Not a directory: {dir_path}"
+                    "success": False,
+                    "entries": [],
+                    "truncated": False,
+                    "error": f"Not a directory: {dir_path}",
                 }
 
             entries = []
@@ -568,45 +565,45 @@ class ShellActor:
             with os.scandir(dir_path) as it:
                 for entry in it:
                     name = entry.name
-                    if not include_hidden and name.startswith('.'):
+                    if not include_hidden and name.startswith("."):
                         continue
                     try:
                         is_dir = entry.is_dir(follow_symlinks=False)
                     except Exception:
                         is_dir = False
-                    entries.append({'name': name, 'is_dir': is_dir})
+                    entries.append({"name": name, "is_dir": is_dir})
                     count += 1
                     if count >= max_entries:
                         truncated = True
                         break
 
             return {
-                'success': True,
-                'entries': entries,
-                'truncated': truncated,
-                'error': None
+                "success": True,
+                "entries": entries,
+                "truncated": truncated,
+                "error": None,
             }
 
         except PermissionError:
             return {
-                'success': False,
-                'entries': [],
-                'truncated': False,
-                'error': 'Permission denied'
+                "success": False,
+                "entries": [],
+                "truncated": False,
+                "error": "Permission denied",
             }
         except FileNotFoundError:
             return {
-                'success': False,
-                'entries': [],
-                'truncated': False,
-                'error': 'Directory not found'
+                "success": False,
+                "entries": [],
+                "truncated": False,
+                "error": "Directory not found",
             }
         except Exception as e:
             return {
-                'success': False,
-                'entries': [],
-                'truncated': False,
-                'error': str(e)
+                "success": False,
+                "entries": [],
+                "truncated": False,
+                "error": str(e),
             }
 
     def read_file(self, file_path: str) -> Dict:
@@ -630,19 +627,19 @@ class ShellActor:
             # Check if file exists
             if not os.path.exists(file_path):
                 return {
-                    'success': False,
-                    'content': None,
-                    'error': f"File not found: {file_path}",
-                    'size': 0
+                    "success": False,
+                    "content": None,
+                    "error": f"File not found: {file_path}",
+                    "size": 0,
                 }
 
             # Check if it's a file (not a directory)
             if not os.path.isfile(file_path):
                 return {
-                    'success': False,
-                    'content': None,
-                    'error': f"Path is not a file: {file_path}",
-                    'size': 0
+                    "success": False,
+                    "content": None,
+                    "error": f"Path is not a file: {file_path}",
+                    "size": 0,
                 }
 
             # Check file size (limit to 1MB)
@@ -651,43 +648,43 @@ class ShellActor:
 
             if file_size > max_size:
                 return {
-                    'success': False,
-                    'content': None,
-                    'error': f"File too large: {file_size} bytes (max {max_size} bytes)",
-                    'size': file_size
+                    "success": False,
+                    "content": None,
+                    "error": f"File too large: {file_size} bytes (max {max_size} bytes)",
+                    "size": file_size,
                 }
 
             # Read the file
-            with open(file_path, encoding='utf-8', errors='replace') as f:
+            with open(file_path, encoding="utf-8", errors="replace") as f:
                 content = f.read()
 
             return {
-                'success': True,
-                'content': content,
-                'error': None,
-                'size': file_size
+                "success": True,
+                "content": content,
+                "error": None,
+                "size": file_size,
             }
 
         except UnicodeDecodeError:
             return {
-                'success': False,
-                'content': None,
-                'error': f"File contains binary data or unsupported encoding: {file_path}",
-                'size': 0
+                "success": False,
+                "content": None,
+                "error": f"File contains binary data or unsupported encoding: {file_path}",
+                "size": 0,
             }
         except PermissionError:
             return {
-                'success': False,
-                'content': None,
-                'error': f"Permission denied: {file_path}",
-                'size': 0
+                "success": False,
+                "content": None,
+                "error": f"Permission denied: {file_path}",
+                "size": 0,
             }
         except Exception as e:
             return {
-                'success': False,
-                'content': None,
-                'error': f"Error reading file: {str(e)}",
-                'size': 0
+                "success": False,
+                "content": None,
+                "error": f"Error reading file: {str(e)}",
+                "size": 0,
             }
 
     def write_file(self, file_path: str, content: str) -> Dict:
@@ -714,24 +711,15 @@ class ShellActor:
                 os.makedirs(dir_path, exist_ok=True)
 
             # Write the file
-            with open(file_path, 'w', encoding='utf-8') as f:
+            with open(file_path, "w", encoding="utf-8") as f:
                 f.write(content)
 
-            return {
-                'success': True,
-                'error': None
-            }
+            return {"success": True, "error": None}
 
         except PermissionError:
-            return {
-                'success': False,
-                'error': f"Permission denied: {file_path}"
-            }
+            return {"success": False, "error": f"Permission denied: {file_path}"}
         except Exception as e:
-            return {
-                'success': False,
-                'error': f"Error writing file: {str(e)}"
-            }
+            return {"success": False, "error": f"Error writing file: {str(e)}"}
 
     def start_interactive_command(self, command: str) -> Dict:
         """
@@ -746,12 +734,12 @@ class ShellActor:
             # Use pty for better terminal emulation
             # Set environment variables for unbuffered output
             env = self.env.copy()
-            env['PYTHONUNBUFFERED'] = '1'
-            env['TERM'] = 'dumb'  # Simple terminal type
-            
+            env["PYTHONUNBUFFERED"] = "1"
+            env["TERM"] = "dumb"  # Simple terminal type
+
             # Create a pseudo-terminal
             master_fd, slave_fd = pty.openpty()
-            
+
             # Prepare preexec to make the child a session leader and set controlling TTY
             def _preexec_with_ctty(fd: int):
                 def _inner():
@@ -760,6 +748,7 @@ class ShellActor:
                         fcntl.ioctl(fd, termios.TIOCSCTTY, 0)
                     except Exception:
                         pass
+
                 return _inner
 
             process = subprocess.Popen(
@@ -772,30 +761,26 @@ class ShellActor:
                 cwd=self.cwd,
                 env=env,
                 preexec_fn=_preexec_with_ctty(slave_fd),
-                close_fds=True
+                close_fds=True,
             )
-            
+
             # Close slave fd in parent process
             os.close(slave_fd)
 
             # Store process info
             self.interactive_processes[session_id] = {
-                'process': process,
-                'command': command,
-                'master_fd': master_fd  # Store the pty master fd
+                "process": process,
+                "command": command,
+                "master_fd": master_fd,  # Store the pty master fd
             }
 
-            return {
-                'success': True,
-                'session_id': session_id,
-                'error': None
-            }
+            return {"success": True, "session_id": session_id, "error": None}
 
         except Exception as e:
             return {
-                'success': False,
-                'session_id': None,
-                'error': f"Failed to start interactive command: {str(e)}"
+                "success": False,
+                "session_id": None,
+                "error": f"Failed to start interactive command: {str(e)}",
             }
 
     def send_stdin_data(self, session_id: str, data: str) -> Dict:
@@ -808,38 +793,29 @@ class ShellActor:
         try:
             if session_id not in self.interactive_processes:
                 return {
-                    'success': False,
-                    'error': f"No interactive session found: {session_id}"
+                    "success": False,
+                    "error": f"No interactive session found: {session_id}",
                 }
 
-            process = self.interactive_processes[session_id]['process']
-            master_fd = self.interactive_processes[session_id]['master_fd']
+            process = self.interactive_processes[session_id]["process"]
+            master_fd = self.interactive_processes[session_id]["master_fd"]
 
             # Check if process is still running
             if process.poll() is not None:
-                return {
-                    'success': False,
-                    'error': "Process has already terminated"
-                }
+                return {"success": False, "error": "Process has already terminated"}
 
             # Send data to pty master
-            os.write(master_fd, data.encode('utf-8'))
+            os.write(master_fd, data.encode("utf-8"))
 
-            return {
-                'success': True,
-                'error': None
-            }
+            return {"success": True, "error": None}
 
         except BrokenPipeError:
             return {
-                'success': False,
-                'error': "Process stdin closed (process may have terminated)"
+                "success": False,
+                "error": "Process stdin closed (process may have terminated)",
             }
         except Exception as e:
-            return {
-                'success': False,
-                'error': f"Error sending stdin data: {str(e)}"
-            }
+            return {"success": False, "error": f"Error sending stdin data: {str(e)}"}
 
     def read_output_chunk(self, session_id: str, timeout: float = 0.1) -> Dict:
         """
@@ -851,16 +827,16 @@ class ShellActor:
         try:
             if session_id not in self.interactive_processes:
                 return {
-                    'success': False,
-                    'stdout': '',
-                    'stderr': '',
-                    'finished': True,
-                    'returncode': None,
-                    'error': f"No interactive session found: {session_id}"
+                    "success": False,
+                    "stdout": "",
+                    "stderr": "",
+                    "finished": True,
+                    "returncode": None,
+                    "error": f"No interactive session found: {session_id}",
                 }
 
-            process = self.interactive_processes[session_id]['process']
-            master_fd = self.interactive_processes[session_id]['master_fd']
+            process = self.interactive_processes[session_id]["process"]
+            master_fd = self.interactive_processes[session_id]["master_fd"]
 
             # Check if process finished
             returncode = process.poll()
@@ -873,11 +849,11 @@ class ShellActor:
             try:
                 import select
                 import fcntl
-                
+
                 # Set non-blocking mode on master fd
                 flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
                 fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
-                
+
                 # Use select to check if data is available
                 ready, _, _ = select.select([master_fd], [], [], timeout)
                 if ready:
@@ -885,7 +861,7 @@ class ShellActor:
                         chunk = os.read(master_fd, 4096)
                         if chunk:
                             # PTY combines stdout/stderr, put it all in stdout
-                            stdout_data = chunk.decode('utf-8', errors='replace')
+                            stdout_data = chunk.decode("utf-8", errors="replace")
                     except (BlockingIOError, OSError):
                         # No data available or pty closed
                         pass
@@ -894,27 +870,27 @@ class ShellActor:
                 if finished:
                     try:
                         chunk = os.read(master_fd, 4096)
-                        stdout_data = chunk.decode('utf-8', errors='replace')
+                        stdout_data = chunk.decode("utf-8", errors="replace")
                     except:
                         pass
 
             return {
-                'success': True,
-                'stdout': stdout_data,
-                'stderr': stderr_data,
-                'finished': finished,
-                'returncode': returncode,
-                'error': None
+                "success": True,
+                "stdout": stdout_data,
+                "stderr": stderr_data,
+                "finished": finished,
+                "returncode": returncode,
+                "error": None,
             }
 
         except Exception as e:
             return {
-                'success': False,
-                'stdout': '',
-                'stderr': '',
-                'finished': True,
-                'returncode': None,
-                'error': f"Error reading output: {str(e)}"
+                "success": False,
+                "stdout": "",
+                "stderr": "",
+                "finished": True,
+                "returncode": None,
+                "error": f"Error reading output: {str(e)}",
             }
 
     def signal_interactive_process(self, session_id: str, sig: int = 2) -> Dict:
@@ -926,17 +902,20 @@ class ShellActor:
         """
         try:
             if session_id not in self.interactive_processes:
-                return {'success': False, 'error': f"No interactive session found: {session_id}"}
-            process = self.interactive_processes[session_id]['process']
+                return {
+                    "success": False,
+                    "error": f"No interactive session found: {session_id}",
+                }
+            process = self.interactive_processes[session_id]["process"]
             if process.poll() is not None:
-                return {'success': False, 'error': 'Process already terminated'}
+                return {"success": False, "error": "Process already terminated"}
             try:
                 os.killpg(os.getpgid(process.pid), sig)
-                return {'success': True, 'error': None}
+                return {"success": True, "error": None}
             except Exception as e:
-                return {'success': False, 'error': str(e)}
+                return {"success": False, "error": str(e)}
         except Exception as e:
-            return {'success': False, 'error': str(e)}
+            return {"success": False, "error": str(e)}
 
     def terminate_interactive_command(self, session_id: str) -> Dict:
         """
@@ -948,12 +927,12 @@ class ShellActor:
         try:
             if session_id not in self.interactive_processes:
                 return {
-                    'success': True,  # Already cleaned up
-                    'returncode': None,
-                    'error': None
+                    "success": True,  # Already cleaned up
+                    "returncode": None,
+                    "error": None,
                 }
 
-            process = self.interactive_processes[session_id]['process']
+            process = self.interactive_processes[session_id]["process"]
 
             # Get final returncode
             returncode = process.poll()
@@ -975,7 +954,7 @@ class ShellActor:
                         returncode = -9  # SIGKILL
 
             # Clean up pty
-            master_fd = self.interactive_processes[session_id]['master_fd']
+            master_fd = self.interactive_processes[session_id]["master_fd"]
             try:
                 os.close(master_fd)
             except Exception:
@@ -984,11 +963,7 @@ class ShellActor:
             # Remove from active sessions
             del self.interactive_processes[session_id]
 
-            return {
-                'success': True,
-                'returncode': returncode,
-                'error': None
-            }
+            return {"success": True, "returncode": returncode, "error": None}
 
         except Exception as e:
             # Still try to clean up
@@ -999,9 +974,9 @@ class ShellActor:
                 pass
 
             return {
-                'success': False,
-                'returncode': None,
-                'error': f"Error terminating process: {str(e)}"
+                "success": False,
+                "returncode": None,
+                "error": f"Error terminating process: {str(e)}",
             }
 
     def cleanup(self) -> None:
