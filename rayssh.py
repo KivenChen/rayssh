@@ -26,6 +26,7 @@ except ImportError:
 import re
 
 from shell_actor import ShellActor
+from lab_actor import LabActor
 from utils import (
     ensure_ray_initialized,
     find_target_node,
@@ -474,7 +475,8 @@ class RaySSHClient:
             'python', 'python3', 'node', 'nodejs', 'ruby', 'irb', 'php',
             'mysql', 'psql', 'sqlite3', 'redis-cli', 'mongo', 'bc',
             'ftp', 'telnet', 'ssh', 'less', 'more', 'top', 'htop',
-            'vi', 'nano', 'emacs', 'pico'
+            'vi', 'nano', 'emacs', 'pico', 'bash', 'pip', 'uv', 'jupyter', 'jupyter-lab',
+            'code-server'
         }
 
         # Get the base command (first word)
@@ -968,12 +970,16 @@ Usage:
     rayssh -l                       # Interactive node selection
     rayssh --ls                     # Print nodes table
     rayssh [-q] <file>              # Submit file as Ray job (experimental)
+    rayssh lab [-q] [path]          # Launch Jupyter Lab on a worker node; upload [path] in remote mode
 
 Options:
     -h, --help                      # Show help
     -l, --list, --show              # Interactive node selection
     --ls                            # Print nodes table
     -q                              # Quick mode (no-wait for jobs)
+    lab options:
+        -q                          # Tail log until link then exit; server keeps running
+        [path]                      # In remote mode, upload path and set as lab root; else open ~
 
 Examples:
     rayssh                          # Random worker node connection
@@ -1279,6 +1285,156 @@ def main():
         if sys.argv[1] in ['--help', '-h']:
             print_help()
             return 0
+
+        # Handle lab subcommand, with optional "-0 lab" to allow head placement when no workers
+        if (len(sys.argv) >= 3 and sys.argv[1] == '-0' and sys.argv[2] == 'lab') or sys.argv[1] == 'lab':
+            # Parse flags: -q optional, [path] optional
+            allow_head_if_no_worker = False
+            if len(sys.argv) >= 3 and sys.argv[1] == '-0' and sys.argv[2] == 'lab':
+                allow_head_if_no_worker = True
+                args = sys.argv[3:]
+            else:
+                args = sys.argv[2:]
+            quick = False
+            lab_path = None
+            for a in args:
+                if a == '-q':
+                    quick = True
+                else:
+                    lab_path = a
+
+            # Always connect to Ray; prefer existing cluster. If RAY_ADDRESS set, use client.
+            ray_address_env = os.environ.get('RAY_ADDRESS')
+            try:
+                if ray_address_env:
+                    # Remote mode: if path provided, upload it as working_dir
+                    ensure_ray_initialized(ray_address=ray_address_env, working_dir=lab_path)
+                else:
+                    if lab_path:
+                        print("Warning: [path] is only used in remote mode (RAY_ADDRESS). Ignoring path.")
+                    ensure_ray_initialized()
+            except Exception as e:
+                msg = str(e)
+                if "Version mismatch" in msg and "Python" in msg:
+                    print("❌ Ray/Python version mismatch between this process and the running local cluster.", file=sys.stderr)
+                    print("   Fix: either (1) run 'rayssh' from the same Python env that started the cluster,", file=sys.stderr)
+                    print("        or (2) restart the local cluster from this env: 'ray stop' then 'ray start --head'", file=sys.stderr)
+                else:
+                    print(f"Error initializing Ray: {e}", file=sys.stderr)
+                return 1
+
+            # Determine a worker node for placement (not head). If none and -0 was used, place on head.
+            worker_node_id = None
+            try:
+                selected_node = get_random_worker_node()
+                worker_node_id = selected_node.get('NodeID')
+            except Exception:
+                if allow_head_if_no_worker:
+                    try:
+                        from utils import get_head_node_id
+                        worker_node_id = get_head_node_id()
+                    except Exception as e:
+                        print(f"Error determining head node: {e}", file=sys.stderr)
+                        return 1
+                else:
+                    print("Error: No worker nodes available. Use 'rayssh -0 lab [-q] [path]' to allow placing the lab on the head node.", file=sys.stderr)
+                    return 1
+
+            # Create or reuse a singleton LabActor per node (detached, named)
+            actor_name = f"rayssh_lab_{worker_node_id}"
+            try:
+                try:
+                    lab_actor = ray.get_actor(actor_name, namespace="rayssh")
+                    # Ensure it's on the intended node by checking info
+                except Exception:
+                    lab_actor = LabActor.options(
+                        name=actor_name,
+                        lifetime="detached",
+                        namespace="rayssh",
+                        scheduling_strategy=ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
+                            node_id=worker_node_id,
+                            soft=False
+                        )
+                    ).remote()
+            except Exception as e:
+                print(f"Error creating LabActor: {e}", file=sys.stderr)
+                return 1
+
+            # Resolve root dir:
+            # - Remote mode with [path]: open at uploaded working dir (actor cwd) -> pass None
+            # - Remote mode without [path]: open at ~ on remote
+            # - Local mode: always open ~
+            if ray_address_env:
+                root_dir = None if lab_path else os.path.expanduser('~')
+            else:
+                root_dir = os.path.expanduser('~')
+
+            # Start lab on port 80
+            result = ray.get(lab_actor.start_lab.remote(root_dir=root_dir, port=80))
+            if not result.get('success'):
+                # If port is taken or a server is already up, try to read existing state and print URL
+                err = str(result.get('error', ''))
+                try:
+                    info = ray.get(lab_actor.get_info.remote())
+                except Exception:
+                    info = None
+                if info and info.get('running') and info.get('url'):
+                    print("ℹ️  Existing Jupyter Lab detected. Reusing running server:")
+                    print(f"🔗 {info['url']}")
+                    log_path = info.get('log_file')
+                    if log_path:
+                        print(f"📝 Log: {log_path}")
+                else:
+                    print(f"❌ Failed to start Jupyter Lab: {err}", file=sys.stderr)
+                    return 1
+            else:
+                # If Jupyter auto-switched ports, reflect the actual URL
+                actual_url = result.get('url')
+                if actual_url:
+                    print(f"🔗 {actual_url}")
+
+            log_path = result.get('log_file')
+            host_ip = result.get('host_ip')
+            port = result.get('port')
+            print(f"🚀 Jupyter Lab starting on {host_ip}:{port}")
+            print(f"📝 Log: {log_path}")
+
+            # Tail log; if -q, tail briefly to capture the access URL then exit.
+            try:
+                # Tail loop: stream and detect a likely access URL
+                start_time = time.time()
+                offset = 0
+                seen_link = False
+                while True:
+                    chunk = ray.get(lab_actor.read_log_chunk.remote(offset, 65536))
+                    data = chunk.get('data', '')
+                    offset = chunk.get('next_offset', offset)
+                    if data:
+                        # Filter to show relevant lines and try to print access URL replacements
+                        for line in data.splitlines():
+                            # Replace localhost/0.0.0.0 with host_ip for readability
+                            if 'http://' in line or 'https://' in line or 'http://' in line.replace('127.0.0.1', host_ip):
+                                line = line.replace('127.0.0.1', host_ip).replace('0.0.0.0', host_ip).replace('localhost', host_ip)
+                                if '/lab?' in line or ('token=' in line and 'lab' in line):
+                                    seen_link = True
+                            print(line)
+                    # Exit conditions
+                    if quick and (seen_link or (time.time() - start_time) > 8.0):
+                        print("✅ Lab launched. Exiting due to -q. Server continues running.")
+                        return 0
+
+                    # If not quick, keep tailing; allow Ctrl-C to stop and terminate
+                    time.sleep(0.5)
+            except KeyboardInterrupt:
+                if not quick:
+                    try:
+                        ray.get(lab_actor.stop.remote())
+                        print("\n🛑 Ctrl-C received. Lab server terminated.")
+                    except Exception:
+                        print("\n🛑 Ctrl-C received. Failed to stop Lab server; it may still be running.")
+                else:
+                    print("\n🛑 Stopped tailing log. Lab server continues to run.")
+                return 0
 
         # Handle list nodes table command - prints the table
         if sys.argv[1] in ['--ls']:

@@ -16,7 +16,7 @@ setup(
     long_description=long_description,
     long_description_content_type="text/markdown",
     packages=find_packages(),
-    py_modules=["rayssh", "shell_actor", "utils"],
+    py_modules=["rayssh", "shell_actor", "utils", "lab_actor"],
     classifiers=[
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Developers",

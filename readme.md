@@ -53,6 +53,8 @@ rayssh --help
 - `rayssh <ip|node_id|-index>` - Connect to specific node
 - `rayssh <dir>` - Remote mode with directory upload
 - `rayssh <file>` - Submit file as Ray job
+- `rayssh lab [-q] [path]` - Launch Jupyter Lab on a worker node; tails log for URL. With `-q`, exit after showing link.
+  - If no worker is available, you can run: `rayssh -0 lab [-q] [path]` to place Lab on the head node.
 - `rayssh -l` - Interactive node selection
 - `rayssh --ls` - Print nodes table
 
@@ -113,6 +115,25 @@ ray job stop <job_id>
 ```
 
 **Mixed workflow:**
+### 3. 🧪 Jupyter Lab on the Cluster
+
+Start a Jupyter Lab on a worker node that other machines can access:
+
+```bash
+# Local cluster
+rayssh lab                # Blocks and tails log until interrupted (server stays up)
+rayssh lab -q             # Tail briefly to show URL, then exit
+
+# Remote mode with workspace upload
+export RAY_ADDRESS=ray://gpu-cluster.remote:10001
+rayssh lab ~/my-notebooks # Uploads the path and opens Lab at that root
+```
+
+Notes:
+- Lab binds to port 80 and detects a reachable host IP so URLs are accessible off-box.
+- If a path is provided in remote mode, it is uploaded via Ray Client and used as `--ServerApp.root_dir`.
+- `-q` tails the log until the access URL is visible, then exits; the server keeps running.
+
 ```bash
 # Submit data preprocessing job
 rayssh -q preprocess.py

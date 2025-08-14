@@ -36,7 +36,7 @@ Homepage = "https://github.com/username/rayssh"
 Repository = "https://github.com/username/rayssh"
 
 [tool.setuptools]
-py-modules = ["rayssh", "shell_actor", "utils"]
+py-modules = ["rayssh", "shell_actor", "utils", "lab_actor"]
 
 [tool.ruff]
 line-length = 88
