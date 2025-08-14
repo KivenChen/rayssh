@@ -2,6 +2,9 @@ import ipaddress
 import os
 import re
 from typing import Dict, List, Optional
+import platform
+import subprocess
+import re
 from functools import lru_cache
 
 import ray
@@ -263,3 +266,124 @@ def fetch_cluster_nodes_via_state() -> tuple[list[Dict], Optional[str]]:
     # Only return alive nodes
     nodes = [node for node in nodes if node.get("Alive", False)]
     return nodes, head_node_id
+
+
+# ============ Common helpers for service actors ============
+
+
+def detect_accessible_ip() -> str:
+    """Determine an accessible IP address without internet calls.
+
+    Linux: use `ip route get` to extract src IP.
+    macOS: use `route -n get default` -> `ipconfig getifaddr`.
+    """
+    try:
+        system = platform.system()
+        if system == "Darwin":
+            cmd = (
+                "IFACE=$(route -n get default 2>/dev/null | awk '/interface:/{print $2}') && "
+                "ipconfig getifaddr $IFACE"
+            )
+        else:
+            cmd = (
+                "ip -o -4 route get 192.0.2.1 | "
+                "awk '{for(i=1;i<=NF;i++) if($i==\"src\"){print $(i+1)}}'"
+            )
+        output = subprocess.check_output(
+            ["bash", "-lc", cmd], stderr=subprocess.DEVNULL
+        )
+        ip = output.decode().strip().splitlines()[0].strip()
+        if ip:
+            return ip
+    except Exception:
+        pass
+    return "127.0.0.1"
+
+
+def adjust_port_for_macos(requested_port: int, fallback_port: int = 8888) -> int:
+    """On macOS, avoid privileged port 80 during development."""
+    try:
+        if platform.system() == "Darwin" and int(requested_port) == 80:
+            return int(fallback_port)
+        return int(requested_port)
+    except Exception:
+        return requested_port
+
+
+def quote_shell_single(path: str) -> str:
+    """Safely single-quote a path for bash -lc string."""
+    return path.replace("'", "'\"'\"'")
+
+
+def sanitize_env_for_jupyter(env: dict) -> dict:
+    """Remove env variables that would disable auth inadvertently."""
+    new_env = dict(env)
+    try:
+        if new_env.get("JUPYTER_TOKEN", None) in ("", "''", '""'):
+            new_env.pop("JUPYTER_TOKEN", None)
+        if new_env.get("JUPYTER_PASSWORD", None) in ("", "''", '""'):
+            new_env.pop("JUPYTER_PASSWORD", None)
+    except Exception:
+        pass
+    return new_env
+
+
+# ============ CLI/interactive helpers ============
+
+
+def is_interactive_command(command: str) -> bool:
+    """Heuristic to decide if a command needs an interactive session (stdin).
+
+    Includes a curated set of known interactive programs and flag checks.
+    """
+    interactive_programs = {
+        "python",
+        "python3",
+        "node",
+        "nodejs",
+        "ruby",
+        "irb",
+        "php",
+        "mysql",
+        "psql",
+        "sqlite3",
+        "redis-cli",
+        "mongo",
+        "bc",
+        "ftp",
+        "telnet",
+        "ssh",
+        "less",
+        "more",
+        "top",
+        "htop",
+        "vi",
+        "nano",
+        "emacs",
+        "pico",
+        "bash",
+        "pip",
+        "uv",
+        "jupyter",
+        "jupyter-lab",
+        "code-server",
+    }
+
+    cmd_parts = command.strip().split()
+    if not cmd_parts:
+        return False
+    base_cmd = cmd_parts[0].split("/")[-1]
+    if base_cmd in interactive_programs:
+        return True
+    lowered = command.lower()
+    if ("-i " in lowered) or ("--interactive" in lowered):
+        return True
+    return False
+
+
+def filter_raylet_warnings(text: str) -> str:
+    """Filter out noisy raylet file_system_monitor warnings from output text."""
+    if not text:
+        return text
+    raylet_warning_pattern = r"\(raylet\) \[.*?\] \(raylet\) file_system_monitor\.cc.*?Object creation will fail if spilling is required\.\s*"
+    return re.sub(raylet_warning_pattern, "", text, flags=re.MULTILINE | re.DOTALL)

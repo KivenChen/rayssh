@@ -1,41 +1,20 @@
 import os
-import platform
 import subprocess
 import threading
 import time
 from typing import Dict, Optional
+from utils import (
+    detect_accessible_ip,
+    adjust_port_for_macos,
+    quote_shell_single,
+    sanitize_env_for_jupyter,
+)
 
 import ray
 
 
 def _detect_accessible_ip() -> str:
-    """
-    Determine an accessible IP address using the prescribed method:
-    ip -o -4 route get 192.0.2.1 | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1)}}'
-    """
-    try:
-        system = platform.system()
-        if system == "Darwin":
-            cmd = (
-                "IFACE=$(route -n get default 2>/dev/null | awk '/interface:/{print $2}') && "
-                "ipconfig getifaddr $IFACE"
-            )
-        else:
-            cmd = (
-                "ip -o -4 route get 192.0.2.1 | "
-                "awk '{for(i=1;i<=NF;i++) if($i==\"src\"){print $(i+1)}}'"
-            )
-        output = subprocess.check_output(
-            ["bash", "-lc", cmd], stderr=subprocess.DEVNULL
-        )
-        ip = output.decode().strip().splitlines()[0].strip()
-        if ip:
-            return ip
-    except Exception:
-        pass
-
-    # Fallback without attempting internet connectivity
-    return "127.0.0.1"
+    return detect_accessible_ip()
 
 
 @ray.remote
@@ -99,11 +78,7 @@ class LabActor:
                 self.host_ip = _detect_accessible_ip()
 
                 # On macOS development machines, avoid privileged ports
-                try:
-                    if platform.system() == "Darwin" and int(port) == 80:
-                        port = 8888
-                except Exception:
-                    pass
+                port = adjust_port_for_macos(port, 8888)
 
                 # Persist chosen values
                 self.bound_port = int(port)
@@ -135,7 +110,7 @@ class LabActor:
                         )
 
                 # Quote root dir for the shell
-                quoted_root = launch_root.replace("'", "'\"'\"'")
+                quoted_root = quote_shell_single(launch_root)
                 cmd = [
                     "bash",
                     "-lc",
@@ -150,14 +125,7 @@ class LabActor:
                 ]
 
                 # Prepare environment: avoid env that disables auth
-                launch_env = dict(self.env)
-                try:
-                    if launch_env.get("JUPYTER_TOKEN", None) in ("", "''", '""'):
-                        launch_env.pop("JUPYTER_TOKEN", None)
-                    if launch_env.get("JUPYTER_PASSWORD", None) in ("", "''", '""'):
-                        launch_env.pop("JUPYTER_PASSWORD", None)
-                except Exception:
-                    pass
+                launch_env = sanitize_env_for_jupyter(self.env)
 
                 # Start process and redirect output to the log file
                 with open(self.log_file_path, "ab", buffering=0) as logf:

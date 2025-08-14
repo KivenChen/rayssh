@@ -5,32 +5,13 @@ import subprocess
 import threading
 import time
 from typing import Dict, Optional
+from utils import detect_accessible_ip, adjust_port_for_macos, quote_shell_single
 
 import ray
 
 
 def _detect_accessible_ip() -> str:
-    try:
-        system = platform.system()
-        if system == "Darwin":
-            cmd = (
-                "IFACE=$(route -n get default 2>/dev/null | awk '/interface:/{print $2}') && "
-                "ipconfig getifaddr $IFACE"
-            )
-        else:
-            cmd = (
-                "ip -o -4 route get 192.0.2.1 | "
-                "awk '{for(i=1;i<=NF;i++) if($i==\"src\"){print $(i+1)}}'"
-            )
-        output = subprocess.check_output(
-            ["bash", "-lc", cmd], stderr=subprocess.DEVNULL
-        )
-        ip = output.decode().strip().splitlines()[0].strip()
-        if ip:
-            return ip
-    except Exception:
-        pass
-    return "127.0.0.1"
+    return detect_accessible_ip()
 
 
 @ray.remote
@@ -80,11 +61,7 @@ class CodeServerActor:
 
                 self.host_ip = _detect_accessible_ip()
 
-                try:
-                    if platform.system() == "Darwin" and int(port) == 80:
-                        port = 8888
-                except Exception:
-                    pass
+                port = adjust_port_for_macos(port, 8888)
 
                 self.bound_port = int(port)
                 self.root_dir = launch_root
@@ -113,7 +90,7 @@ class CodeServerActor:
                     self.password = secrets.token_urlsafe(16)
 
                 # Quote root
-                quoted_root = launch_root.replace("'", "'\"'\"'")
+                quoted_root = quote_shell_single(launch_root)
                 cmd = [
                     "bash",
                     "-lc",
