@@ -20,10 +20,7 @@ setup(
     packages=find_packages(),
     py_modules=[
         "rayssh",
-        "shell_actor",
         "utils",
-        "lab_actor",
-        "code_server_actor",
         "command",
     ],
     classifiers=[

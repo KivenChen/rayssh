@@ -142,15 +142,15 @@ def ensure_ray_initialized(
 
         # Add required modules for RaySSH actors
         try:
-            import lab_actor
-            import code_server_actor
-            import shell_actor
+            from agent import lab as lab_module
+            from agent import code_server as code_server_module
+            from agent import shell as shell_module
             import utils as utils_module
 
             runtime_env["py_modules"] = [
-                lab_actor.__file__,
-                code_server_actor.__file__,
-                shell_actor.__file__,
+                lab_module.__file__,
+                code_server_module.__file__,
+                shell_module.__file__,
                 utils_module.__file__,
             ]
         except ImportError:
@@ -185,15 +185,15 @@ def ensure_ray_initialized(
             local_runtime_env = {"working_dir": os.getcwd()}
             # Add required modules for local cluster as well
             try:
-                import lab_actor
-                import code_server_actor
-                import shell_actor
+                from agent import lab as lab_module
+                from agent import code_server as code_server_module
+                from agent import shell as shell_module
                 import utils as utils_module
 
                 local_runtime_env["py_modules"] = [
-                    lab_actor.__file__,
-                    code_server_actor.__file__,
-                    shell_actor.__file__,
+                    lab_module.__file__,
+                    code_server_module.__file__,
+                    shell_module.__file__,
                     utils_module.__file__,
                 ]
             except ImportError:

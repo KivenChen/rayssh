@@ -26,9 +26,9 @@ except ImportError:
 
 import re
 
-from shell_actor import ShellActor
-from lab_actor import LabActor
-from code_server_actor import CodeServerActor
+from agent.shell import ShellActor
+from agent.lab import LabActor
+from agent.code_server import CodeServerActor
 from command import handle_lab_command, handle_code_command
 from utils import (
     ensure_ray_initialized,

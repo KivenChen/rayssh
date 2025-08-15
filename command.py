@@ -8,8 +8,8 @@ from typing import List, Tuple, Dict, Optional
 
 import ray
 
-from lab_actor import LabActor
-from code_server_actor import CodeServerActor
+from agent.lab import LabActor
+from agent.code_server import CodeServerActor
 from utils import (
     ensure_ray_initialized,
     fetch_cluster_nodes_via_state,
