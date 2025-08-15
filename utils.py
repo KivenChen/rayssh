@@ -126,10 +126,36 @@ def ensure_ray_initialized(
         os.environ["RAY_RAYLET_LOG_LEVEL"] = "FATAL"  # Suppress raylet logs
         os.environ["RAY_CORE_WORKER_LOG_LEVEL"] = "FATAL"  # Suppress core worker logs
 
+        # Suppress additional Ray client and worker messages
+        import logging
+
+        logging.getLogger("ray").setLevel(logging.WARNING)
+        logging.getLogger("ray.serve").setLevel(logging.WARNING)
+        logging.getLogger("ray.tune").setLevel(logging.WARNING)
+        logging.getLogger("ray.rllib").setLevel(logging.WARNING)
+        logging.getLogger("ray.workflow").setLevel(logging.WARNING)
+
         # Prepare runtime environment for Ray Client
         runtime_env = {}
         if working_dir and ray_address and ray_address.startswith("ray://"):
             runtime_env["working_dir"] = working_dir
+
+        # Add required modules for RaySSH actors
+        try:
+            import lab_actor
+            import code_server_actor
+            import shell_actor
+            import utils as utils_module
+
+            runtime_env["py_modules"] = [
+                lab_actor.__file__,
+                code_server_actor.__file__,
+                shell_actor.__file__,
+                utils_module.__file__,
+            ]
+        except ImportError:
+            # If modules can't be imported, continue without py_modules
+            pass
 
         # Initialize Ray (either local cluster, connect-only, or Ray Client)
         if ray_address and ray_address.startswith("ray://"):
@@ -155,7 +181,26 @@ def ensure_ray_initialized(
             )
         else:
             # Local Ray cluster (may start one if none exists)
+            # Include current working directory so remote workers can import local modules
+            local_runtime_env = {"working_dir": os.getcwd()}
+            # Add required modules for local cluster as well
+            try:
+                import lab_actor
+                import code_server_actor
+                import shell_actor
+                import utils as utils_module
+
+                local_runtime_env["py_modules"] = [
+                    lab_actor.__file__,
+                    code_server_actor.__file__,
+                    shell_actor.__file__,
+                    utils_module.__file__,
+                ]
+            except ImportError:
+                pass
+
             ray.init(
+                runtime_env=local_runtime_env,
                 logging_level="FATAL",  # Only show fatal errors
                 log_to_driver=False,  # Don't send raylet logs to driver
                 include_dashboard=False,  # Disable dashboard to reduce log noise
@@ -208,9 +253,20 @@ def fetch_cluster_nodes_via_state() -> tuple[list[Dict], Optional[str]]:
     - Normalizes each node to keys: 'NodeID', 'NodeManagerAddress', 'Alive', 'Resources'.
     - Determines head_node_id from the same list by checking common flags.
     """
+    import logging
     from ray.util import state as ray_state  # type: ignore
 
-    raw_nodes = ray_state.list_nodes(address="auto", detail=True)
+    # Temporarily suppress logging from Ray state API
+    ray_logger = logging.getLogger("ray")
+    original_level = ray_logger.level
+    ray_logger.setLevel(logging.WARNING)
+
+    try:
+        raw_nodes = ray_state.list_nodes(address="auto", detail=True)
+    finally:
+        # Restore original logging level
+        ray_logger.setLevel(original_level)
+
     if not raw_nodes:
         return [], None
 
@@ -387,3 +443,127 @@ def filter_raylet_warnings(text: str) -> str:
         return text
     raylet_warning_pattern = r"\(raylet\) \[.*?\] \(raylet\) file_system_monitor\.cc.*?Object creation will fail if spilling is required\.\s*"
     return re.sub(raylet_warning_pattern, "", text, flags=re.MULTILINE | re.DOTALL)
+
+
+def download_code_server_if_needed(os_name: str, arch: str) -> Optional[str]:
+    """Download code-server for specified target platform if not cached.
+    Args:
+        os_name: 'linux' or 'macos' (code-server naming)
+        arch: 'amd64' or 'arm64'
+    Returns:
+        Path to the downloaded archive, or None if download failed
+    """
+    import urllib.request
+    import json
+    import sys
+    import re
+
+    def _find_latest_cached(cache_dir: str) -> Optional[str]:
+        """Find the newest cached archive for the given target (by semantic version)."""
+        try:
+            if not os.path.isdir(cache_dir):
+                return None
+            pattern = re.compile(
+                rf"^code-server-(\d+\.\d+\.\d+)-{os_name}-{arch}\.tar\.gz$"
+            )
+            candidates: list[tuple[tuple[int, int, int], str]] = []
+            for fname in os.listdir(cache_dir):
+                m = pattern.match(fname)
+                if not m:
+                    continue
+                ver_str = m.group(1)
+                try:
+                    parts = tuple(int(x) for x in ver_str.split("."))
+                    if len(parts) == 3:
+                        candidates.append((parts, os.path.join(cache_dir, fname)))
+                except Exception:
+                    continue
+            if not candidates:
+                return None
+            candidates.sort(reverse=True)  # highest version first
+            return candidates[0][1]
+        except Exception:
+            return None
+
+    try:
+        cache_dir = os.path.expanduser("~/.rayssh/client_cache")
+        os.makedirs(cache_dir, exist_ok=True)
+
+        # Try to get latest version from GitHub API
+        version: Optional[str] = None
+        print("🔍 Fetching latest code-server version for target...")
+        api_url = "https://api.github.com/repos/coder/code-server/releases/latest"
+        try:
+            with urllib.request.urlopen(api_url, timeout=10) as response:
+                release_data = json.loads(response.read().decode())
+                tag = release_data.get("tag_name") or release_data.get("name")
+                if tag:
+                    version = str(tag).lstrip("v")
+        except Exception as e:
+            print(f"⚠️  Could not contact GitHub API: {e}")
+
+        # If API failed, fall back to the newest cached archive (if any)
+        if not version:
+            cached_latest = _find_latest_cached(cache_dir)
+            if cached_latest and os.path.exists(cached_latest):
+                fname = os.path.basename(cached_latest)
+                print(f"✅ Using newest cached code-server archive: {fname}")
+                return cached_latest
+            print(
+                "❌ No cached code-server archive found for target and API is unreachable"
+            )
+            return None
+
+        filename = f"code-server-{version}-{os_name}-{arch}.tar.gz"
+        cached_file = os.path.join(cache_dir, filename)
+
+        # Use cache if present
+        if os.path.exists(cached_file):
+            print(f"✅ Using cached code-server v{version} for {os_name}-{arch}")
+            return cached_file
+
+        # Download with progress
+        download_url = f"https://github.com/coder/code-server/releases/download/v{version}/{filename}"
+        print(f"⬇️  Downloading code-server v{version} for {os_name}-{arch}...")
+        print(f"   URL: {download_url}")
+
+        def _progress(count, block_size, total_size):
+            downloaded = count * block_size
+            if total_size > 0:
+                pct = min(100, int(downloaded * 100 / total_size))
+                total_mb = total_size / (1024 * 1024)
+                done_mb = downloaded / (1024 * 1024)
+                sys.stdout.write(
+                    f"\r   Progress: {done_mb:.1f}/{total_mb:.1f} MB ({pct}%)"
+                )
+            else:
+                done_mb = downloaded / (1024 * 1024)
+                sys.stdout.write(f"\r   Progress: {done_mb:.1f} MB")
+            sys.stdout.flush()
+
+        temp_file = cached_file + ".tmp"
+        try:
+            urllib.request.urlretrieve(download_url, temp_file, _progress)
+            sys.stdout.write("\n")
+            os.rename(temp_file, cached_file)
+            print(f"✅ Downloaded code-server to {cached_file}")
+            return cached_file
+        except Exception as e:
+            # On download failure, fall back to newest cached if available
+            print(f"⚠️  Download failed: {e}")
+            try:
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)
+            except Exception:
+                pass
+            cached_latest = _find_latest_cached(cache_dir)
+            if cached_latest and os.path.exists(cached_latest):
+                fname = os.path.basename(cached_latest)
+                print(f"✅ Falling back to newest cached archive: {fname}")
+                return cached_latest
+            print("❌ No cached archive available to fall back to")
+            return None
+
+    except Exception as e:
+        print(f"❌ Error preparing code-server: {e}")
+        return None
