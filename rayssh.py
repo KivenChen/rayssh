@@ -31,6 +31,13 @@ from agent.shell import ShellActor
 from agent.lab import LabActor
 from agent.code_server import CodeServerActor
 from command import handle_lab_command, handle_code_command
+from command import (
+    get_node_by_index as cmd_get_node_by_index,
+    get_random_worker_node as cmd_get_random_worker_node,
+    print_nodes_table as cmd_print_nodes_table,
+    interactive_node_selector as cmd_interactive_node_selector,
+    submit_file_job as cmd_submit_file_job,
+)
 from utils import (
     ensure_ray_initialized,
     find_target_node,
@@ -1047,50 +1054,6 @@ def print_nodes_table():
     return 0
 
 
-def print_help():
-    """Print help information."""
-    help_text = """
-RaySSH: Command Ray nodes like a shell or submit jobs
-
-Usage:
-    rayssh                          # Randomly connect to a worker node (or remote mode if RAY_ADDRESS set)
-    rayssh <ip|node_id|-index>      # Connect to specific node
-    rayssh <dir>                    # Remote mode with directory upload (if RAY_ADDRESS set)
-    rayssh -l                       # Interactive node selection
-    rayssh --ls                     # Print nodes table
-    rayssh [-q] <file>              # Submit file as Ray job (experimental)
-    rayssh lab [-q] [path]          # Launch Jupyter Lab on a worker node; upload [path] in remote mode
-
-Options:
-    -h, --help                      # Show help
-    -l, --list, --show              # Interactive node selection
-    --ls                            # Print nodes table
-    -q                              # Quick mode (no-wait for jobs)
-    lab options:
-        -q                          # Tail log until link then exit; server keeps running
-        [path]                      # In remote mode, upload path and set as lab root; else open ~
-
-Examples:
-    rayssh                          # Random worker node connection
-    rayssh 192.168.1.100            # Connect by IP
-    rayssh -0                       # Connect to head node
-    rayssh -1                       # Connect to first worker
-    rayssh -l                       # Interactive node selection
-    rayssh --ls                     # Show nodes table
-    rayssh script.py                # Submit Python job (tails log)
-    rayssh -q train.sh              # Submit bash job (no-wait, view log at Ray Dashboard)
-    n_gpus=8 rayssh train.py        # GPUs to request for rayssh <file> (only maps to --entrypoint-num-gpus)
-
-Environment Variables:
-    RAY_ADDRESS=ray://localhost:10001   # Enable remote mode
- 
- 🖥️ Shell features: vim remote files, tab completion, Ctrl-C interrupts, interactive programs
- 🚀 Job submission: Python/Bash files, working-dir='.', entrypoint-num-cpus=1
- 🌐 Remote mode: Upload local directories, work on remote clusters like local development
- """
-    print(help_text.strip())
-
-
 def interactive_node_selector():
     """
     Display an interactive node selection screen with arrow key navigation.
@@ -1400,7 +1363,7 @@ def _connect_action(node_arg: str, working_dir: str = None) -> int:
     if node_arg and node_arg.startswith("-") and node_arg[1:].isdigit():
         try:
             index = int(node_arg[1:])
-            node = get_node_by_index(index)
+            node = cmd_get_node_by_index(index)
             node_arg = node.get("NodeManagerAddress")
             print(f"🔗 Connecting to node -{index}: {node_arg}")
         except Exception as e:
@@ -1438,11 +1401,11 @@ def cli(ctx: click.Context, show_table: bool, list_nodes: bool, quick: bool, arg
 
     # --ls: print nodes table
     if show_table:
-        sys.exit(print_nodes_table())
+        sys.exit(cmd_print_nodes_table())
 
     # -l: interactive node selection then connect
     if list_nodes:
-        selected_node_ip = interactive_node_selector()
+        selected_node_ip = cmd_interactive_node_selector()
         if selected_node_ip is None:
             print("\n❌ Cancelled.")
             sys.exit(0)
@@ -1454,7 +1417,7 @@ def cli(ctx: click.Context, show_table: bool, list_nodes: bool, quick: bool, arg
             sys.exit(_connect_action(ray_address_env))
         else:
             try:
-                selected_node = get_random_worker_node()
+                selected_node = cmd_get_random_worker_node()
                 node_arg = selected_node.get("NodeManagerAddress")
                 print(f"🎲 Randomly connecting to worker node: {node_arg}")
                 sys.exit(_connect_action(node_arg))
@@ -1465,7 +1428,7 @@ def cli(ctx: click.Context, show_table: bool, list_nodes: bool, quick: bool, arg
     # With argument: file -> submit; dir -> remote upload; else -> connect
     arg = argument
     if os.path.exists(arg) and os.path.isfile(arg) and "." in os.path.basename(arg):
-        sys.exit(submit_file_job(arg, no_wait=quick))
+        sys.exit(cmd_submit_file_job(arg, no_wait=quick))
 
     if os.path.exists(arg) and os.path.isdir(arg):
         if not ray_address_env:
