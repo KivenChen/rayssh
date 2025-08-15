@@ -25,6 +25,7 @@ except ImportError:
     READLINE_AVAILABLE = False
 
 import re
+import click
 
 from agent.shell import ShellActor
 from agent.lab import LabActor
@@ -1380,248 +1381,38 @@ def submit_file_job(file_path: str, no_wait: bool = False) -> int:
 
 
 def main():
-    """Main entry point for RaySSH."""
-    # Check if RAY_ADDRESS is set
-    ray_address_env = os.environ.get("RAY_ADDRESS")
+    """Main entry now delegates to Click CLI for argument parsing."""
+    try:
+        return cli.main(standalone_mode=False)
+    except SystemExit as e:
+        return int(e.code)
+    except Exception:
+        return 1
 
-    # Parse command line arguments
-    if len(sys.argv) < 2:
-        # No arguments
-        if ray_address_env:
-            client = RaySSHClient(ray_address_env, working_dir=None)
 
-            try:
-                if not client.initialize():
-                    return 1
-                client.run_interactive_shell()
-                return 0
-            except KeyboardInterrupt:
-                print("\n⚡ Interrupted")
-                return 1
-            except Exception as e:
-                print(f"Error: {e}", file=sys.stderr)
-                return 1
-            finally:
-                client.cleanup()
-        else:
-            # No RAY_ADDRESS or not Ray Client - randomly connect to a worker node
-            try:
-                selected_node = get_random_worker_node()
-                node_arg = selected_node.get("NodeManagerAddress")
-                print(f"🎲 Randomly connecting to worker node: {node_arg}")
-            except ValueError as e:
-                print(f"Error: {e}")
-                return 1
-            except Exception as e:
-                print(f"Error selecting random worker node: {e}", file=sys.stderr)
-                return 1
-    else:
-        # Handle help command
-        if sys.argv[1] in ["--help", "-h"]:
-            print_help()
-            return 0
+# =========================
+# Click-based CLI
+# =========================
 
-        # Handle lab subcommand
-        if (
-            len(sys.argv) >= 3 and sys.argv[1] == "-0" and sys.argv[2] == "lab"
-        ) or sys.argv[1] == "lab":
-            return handle_lab_command(sys.argv[1:])
-
-        # Handle code subcommand
-        if (
-            len(sys.argv) >= 3 and sys.argv[1] == "-0" and sys.argv[2] == "code"
-        ) or sys.argv[1] == "code":
-            return handle_code_command(sys.argv[1:])
-
-            log_path = result.get("log_file")
-            host_ip = result.get("host_ip")
-            port = result.get("port")
-            print(f"🚀 Jupyter Lab starting on {host_ip}:{port}")
-            print(f"📝 Log: {log_path}")
-
-            # Tail log; if -q, tail briefly to capture the access URL then exit.
-            try:
-                # Tail loop: stream and detect a likely access URL
-                start_time = time.time()
-                offset = 0
-                seen_link = False
-                while True:
-                    chunk = ray.get(lab_actor.read_log_chunk.remote(offset, 65536))
-                    data = chunk.get("data", "")
-                    offset = chunk.get("next_offset", offset)
-                    if data:
-                        # Filter to show relevant lines and try to print access URL replacements
-                        for line in data.splitlines():
-                            # Replace localhost/0.0.0.0 with host_ip for readability
-                            if (
-                                "http://" in line
-                                or "https://" in line
-                                or "http://" in line.replace("127.0.0.1", host_ip)
-                            ):
-                                line = (
-                                    line.replace("127.0.0.1", host_ip)
-                                    .replace("0.0.0.0", host_ip)
-                                    .replace("localhost", host_ip)
-                                )
-                                if "/lab?" in line or (
-                                    "token=" in line and "lab" in line
-                                ):
-                                    seen_link = True
-                            print(line)
-                    # Exit conditions
-                    if quick and (seen_link or (time.time() - start_time) > 8.0):
-                        print(
-                            "✅ Lab launched. Exiting due to -q. Server continues running."
-                        )
-                        return 0
-
-                    # If not quick, keep tailing; allow Ctrl-C to stop and terminate
-                    time.sleep(0.5)
-            except KeyboardInterrupt:
-                if not quick:
-                    try:
-                        ray.get(lab_actor.stop.remote())
-                        print("\n🛑 Ctrl-C received. Lab server terminated.")
-                    except Exception:
-                        print(
-                            "\n🛑 Ctrl-C received. Failed to stop Lab server; it may still be running."
-                        )
-                else:
-                    print("\n🛑 Stopped tailing log. Lab server continues to run.")
-                return 0
-
-        # Handle list nodes table command - prints the table
-        if sys.argv[1] in ["--ls"]:
-            if len(sys.argv) != 2:
-                print(
-                    "Error: --ls option does not accept additional arguments",
-                    file=sys.stderr,
-                )
-                return 1
-            return print_nodes_table()
-
-        # Handle interactive node selector command
-        if sys.argv[1] in ["--list", "--show", "-l"]:
-            if len(sys.argv) != 2:
-                print(
-                    "Error: --list, --show, and -l options do not accept additional arguments",
-                    file=sys.stderr,
-                )
-                return 1
-            selected_node_ip = interactive_node_selector()
-            if selected_node_ip is None:
-                print("\n❌ Cancelled.")
-                return 0
-            node_arg = selected_node_ip
-        else:
-            # Handle single argument: could be directory (for remote mode) or file (for job submission)
-            if len(sys.argv) == 2:
-                argument = sys.argv[1]
-
-                # Check if it's a file for job submission
-                if (
-                    os.path.exists(argument)
-                    and os.path.isfile(argument)
-                    and "." in argument
-                ):
-                    # It's a file - submit as Ray job
-                    return submit_file_job(argument, no_wait=False)
-
-                # Check if it's a directory and RAY_ADDRESS is set
-                elif (
-                    ray_address_env
-                    and os.path.exists(argument)
-                    and os.path.isdir(argument)
-                ):
-                    # It's a directory and we're in remote mode - upload and connect
-                    print(f"🌐 Initiating Ray client connection...")
-                    print(f"📦 Uploading directory: {os.path.abspath(argument)}")
-
-                    client = RaySSHClient(ray_address_env, working_dir=argument)
-
-                    try:
-                        if not client.initialize():
-                            return 1
-                        client.run_interactive_shell()
-                        return 0
-                    except KeyboardInterrupt:
-                        print("\n⚡ Interrupted")
-                        return 1
-                    except Exception as e:
-                        print(f"Error: {e}", file=sys.stderr)
-                        return 1
-                    finally:
-                        client.cleanup()
-
-                # Check if it's a directory but no RAY_ADDRESS
-                elif os.path.exists(argument) and os.path.isdir(argument):
-                    print(
-                        f"Error: Directory specified but RAY_ADDRESS not set.",
-                        file=sys.stderr,
-                    )
-                    print(
-                        f"Set RAY_ADDRESS to enable remote mode with directory upload.",
-                        file=sys.stderr,
-                    )
-                    return 1
-
-                # Not a file or directory - might be node argument, let it fall through
-
-            # Handle -q file pattern
-            elif len(sys.argv) == 3 and sys.argv[1] == "-q":
-                potential_file = sys.argv[2]
-                if (
-                    os.path.exists(potential_file)
-                    and os.path.isfile(potential_file)
-                    and "." in potential_file
-                ):
-                    return submit_file_job(potential_file, no_wait=True)
-                else:
-                    print(
-                        f"Error: File '{potential_file}' not found or not a valid file",
-                        file=sys.stderr,
-                    )
-                    return 1
-
-            # Handle node connection
-            if len(sys.argv) != 2:
-                print("Error: Invalid arguments", file=sys.stderr)
-                print(
-                    "Usage: rayssh <node|file|directory> or rayssh -q <file>",
-                    file=sys.stderr,
-                )
-                print("Use 'rayssh --help' for more information", file=sys.stderr)
-                return 1
-
-            node_arg = sys.argv[1]
-
-    # Handle node index argument (-0, -1, -2, etc.)
-    if node_arg.startswith("-") and node_arg[1:].isdigit():
+def _connect_action(node_arg: str, working_dir: str = None) -> int:
+    """Connect to a node or remote address and run the interactive shell."""
+    # Handle node index shorthand like -0, -1, ...
+    if node_arg and node_arg.startswith("-") and node_arg[1:].isdigit():
         try:
-            index = int(node_arg[1:])  # Extract number after '-'
+            index = int(node_arg[1:])
             node = get_node_by_index(index)
-            # Use the node's IP address as the connection target
             node_arg = node.get("NodeManagerAddress")
             print(f"🔗 Connecting to node -{index}: {node_arg}")
-        except ValueError as e:
-            print(f"Error: {e}", file=sys.stderr)
-            print("Use 'rayssh --ls' to see available nodes", file=sys.stderr)
-            return 1
         except Exception as e:
-            print(f"Error getting node by index: {e}", file=sys.stderr)
+            print(f"Error resolving node index: {e}", file=sys.stderr)
             return 1
 
-    # Create and run the client
-    # For local cluster connections, we don't use working_dir
-    client = RaySSHClient(node_arg, working_dir=None)
-
+    client = RaySSHClient(node_arg, working_dir=working_dir)
     try:
         if not client.initialize():
             return 1
-
         client.run_interactive_shell()
         return 0
-
     except KeyboardInterrupt:
         print("\n⚡ Interrupted")
         return 1
@@ -1630,6 +1421,88 @@ def main():
         return 1
     finally:
         client.cleanup()
+
+
+@click.group(invoke_without_command=True)
+@click.option("--ls", "show_table", is_flag=True, help="Print nodes table")
+@click.option("-l", "list_nodes", is_flag=True, help="Interactive node selector")
+@click.option("-q", "quick", is_flag=True, help="Quick mode for file job submission")
+@click.argument("argument", required=False)
+@click.pass_context
+def cli(ctx: click.Context, show_table: bool, list_nodes: bool, quick: bool, argument: str):
+    """RaySSH: Command Ray nodes like a shell or submit jobs."""
+    if ctx.invoked_subcommand is not None:
+        return
+
+    ray_address_env = os.environ.get("RAY_ADDRESS")
+
+    # --ls: print nodes table
+    if show_table:
+        sys.exit(print_nodes_table())
+
+    # -l: interactive node selection then connect
+    if list_nodes:
+        selected_node_ip = interactive_node_selector()
+        if selected_node_ip is None:
+            print("\n❌ Cancelled.")
+            sys.exit(0)
+        sys.exit(_connect_action(selected_node_ip))
+
+    # No argument: connect based on environment
+    if argument is None:
+        if ray_address_env:
+            sys.exit(_connect_action(ray_address_env))
+        else:
+            try:
+                selected_node = get_random_worker_node()
+                node_arg = selected_node.get("NodeManagerAddress")
+                print(f"🎲 Randomly connecting to worker node: {node_arg}")
+                sys.exit(_connect_action(node_arg))
+            except Exception as e:
+                print(f"Error selecting node: {e}", file=sys.stderr)
+                sys.exit(1)
+
+    # With argument: file -> submit; dir -> remote upload; else -> connect
+    arg = argument
+    if os.path.exists(arg) and os.path.isfile(arg) and "." in os.path.basename(arg):
+        sys.exit(submit_file_job(arg, no_wait=quick))
+
+    if os.path.exists(arg) and os.path.isdir(arg):
+        if not ray_address_env:
+            print(
+                "Error: Directory specified but RAY_ADDRESS not set.",
+                file=sys.stderr,
+            )
+            print(
+                "Set RAY_ADDRESS to enable remote mode with directory upload.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print("🌐 Initiating Ray client connection...")
+        print(f"📦 Uploading directory: {os.path.abspath(arg)}")
+        sys.exit(_connect_action(ray_address_env, working_dir=arg))
+
+    # Else treat as node argument (ip or node id prefix)
+    sys.exit(_connect_action(arg))
+
+
+@cli.command(help="Launch Jupyter Lab on a worker node")
+@click.option("-q", "quick", is_flag=True, help="Quick mode: tail briefly until link appears")
+@click.argument("path", required=False)
+def lab(quick: bool, path: str):
+    argv = ["lab"]
+    if quick:
+        argv.append("-q")
+    if path:
+        argv.append(path)
+    sys.exit(handle_lab_command(argv))
+
+
+@cli.command(context_settings={"ignore_unknown_options": True}, help="Open code-server on a worker node")
+@click.argument("code_args", nargs=-1, type=click.UNPROCESSED)
+def code(code_args):
+    argv = ["code"] + list(code_args)
+    sys.exit(handle_code_command(argv))
 
 
 if __name__ == "__main__":
