@@ -12,7 +12,7 @@ with open("requirements.txt", encoding="utf-8") as fh:
 
 setup(
     name="rayssh",
-    version="0.1.0",
+    version="0.2.0",
     author="RaySSH Development Team",
     description="Command a Ray node like a shell",
     long_description=long_description,

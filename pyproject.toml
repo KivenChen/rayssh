@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rayssh"
-version = "0.1.0"
-description = "Command a Ray node like a shell"
+version = "0.2.0"
+description = "Command your Ray node like a shell"
 readme = "readme.md"
 requires-python = ">=3.8"
 authors = [
@@ -32,8 +32,8 @@ dependencies = [
 rayssh = "rayssh:main"
 
 [project.urls]
-Homepage = "https://github.com/username/rayssh"
-Repository = "https://github.com/username/rayssh"
+Homepage = "https://github.com/kivenchen/rayssh"
+Repository = "https://github.com/kivenchen/rayssh"
 
 [tool.setuptools]
 py-modules = [
