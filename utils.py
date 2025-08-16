@@ -30,7 +30,10 @@ def parse_node_argument(node_arg: str) -> tuple[str, str]:
     Parse the node argument to determine if it's an IP address or node ID.
     Returns (type, value) where type is either 'ip' or 'node_id'.
     """
-    if is_valid_ip(node_arg):
+    # Handle special cases like localhost
+    if node_arg.lower() in ["localhost", "127.0.0.1", "::1"]:
+        return ("ip", "127.0.0.1")  # Normalize to 127.0.0.1
+    elif is_valid_ip(node_arg):
         return ("ip", node_arg)
     elif is_valid_node_id(node_arg):
         return ("node_id", node_arg)
@@ -160,13 +163,23 @@ def ensure_ray_initialized(
         # Initialize Ray (either local cluster, connect-only, or Ray Client)
         if ray_address and ray_address.startswith("ray://"):
             # Ray Client connection
-            ray.init(
-                address=ray_address,
-                runtime_env=runtime_env if runtime_env else None,
-                logging_level="FATAL",
-                log_to_driver=False,
-                ignore_reinit_error=True,
-            )
+            # Only set runtime_env if working_dir is explicitly provided
+            # When working_dir is None, don't upload any directory (use remote HOME)
+            if working_dir is not None:
+                ray.init(
+                    address=ray_address,
+                    runtime_env=runtime_env,
+                    logging_level="FATAL",
+                    log_to_driver=False,
+                    ignore_reinit_error=True,
+                )
+            else:
+                ray.init(
+                    address=ray_address,
+                    logging_level="FATAL",
+                    log_to_driver=False,
+                    ignore_reinit_error=True,
+                )
         elif connect_only:
             # Connect to an existing Ray cluster without starting one
             # address="auto" will attempt to discover a running local cluster
@@ -314,6 +327,7 @@ def fetch_cluster_nodes_via_state() -> tuple[list[Dict], Optional[str]]:
             {
                 "NodeID": node_id,
                 "NodeManagerAddress": node_ip,
+                "NodeName": node_ip,  # Use IP as NodeName for consistency
                 "Alive": bool(state_alive),
                 "Resources": resources,
             }

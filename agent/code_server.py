@@ -10,9 +10,6 @@ from utils import detect_accessible_ip, adjust_port_for_macos, quote_shell_singl
 import ray
 
 
-def _detect_accessible_ip() -> str:
-    return detect_accessible_ip()
-
 
 @ray.remote
 class CodeServerActor:
@@ -81,7 +78,7 @@ class CodeServerActor:
                     f"~/.rayssh/code-server-{timestamp}.log"
                 )
 
-                self.host_ip = _detect_accessible_ip()
+                self.host_ip = detect_accessible_ip()
 
                 port = adjust_port_for_macos(port, 8888)
 
