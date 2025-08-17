@@ -252,17 +252,14 @@ Options:
         [path]                      # In remote mode, upload path and set as root; else open ~
 
 Examples:
-    rayssh                          # Random worker node (local) or remote HOME
-    rayssh 192.168.1.100            # Connect by IP (local mode)
-    rayssh -0                       # Connect to head node (local mode)
-    rayssh -1                       # Connect to first worker (local mode)
+    rayssh                          # Random worker node
+    rayssh 192.168.1.100            # Connect by IP
+    rayssh -1                       # Connect to first worker
     rayssh -l                       # Interactive node selection
     rayssh --ls                     # Show nodes table
     rayssh ./myproject              # Upload and work in directory (remote mode)
-    rayssh script.py                # Submit Python job (tails log)
-    rayssh -q train.sh              # Submit bash job (no-wait, view log at Ray Dashboard)
+    rayssh [-q] script.py           # Submit Python job and wait. "-q" for no-wait.
     rayssh lab                      # Launch Jupyter Lab on worker node
-    rayssh -0 lab                   # Launch Jupyter Lab on head node
     rayssh code ./src               # Launch code-server with uploaded directory
     n_gpus=8 rayssh train.py        # GPUs to request for job submission
 
@@ -271,9 +268,9 @@ Environment Variables:
 
 🖥️  Terminal features: Real-time shell via WebSockets, graceful shutdown
 🌐 Remote mode: Upload local directories, work on remote clusters  
-🚀 Job submission: Python/Bash files, working-dir='.', entrypoint-num-cpus=1
-🔬 Lab features: Jupyter Lab on Ray nodes with optional directory upload
-💻 Code features: VS Code server on Ray nodes with optional directory upload
+🚀 Job submission: Python/Bash files, with working dir upload.
+🔬 Lab features: Jupyter Lab on Ray nodes with optional working dir upload
+💻 Code features: VS Code server on Ray nodes with working dir upload
 """
     print(help_text.strip())
 

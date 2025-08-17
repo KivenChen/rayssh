@@ -1,4 +1,4 @@
-# RaySSH: Command Ray nodes like a shell or submit jobs
+# RaySSH: Command your Ray nodes like a shell
 ## Features
 
 🖥️ **Interactive Shell**: Command Ray nodes with a familiar shell interface  
@@ -18,45 +18,13 @@ After installation, you can use the `rayssh` command from your terminal directly
 
 ## Quick Start
 
-### Local Ray Cluster
-
-```bash
-# Start local Ray cluster
-ray start --head
-
-# Use RaySSH
-rayssh                    # Random worker node
-rayssh -0                 # Head node
-rayssh -1                 # First worker
-rayssh -l                 # Interactive selection
-rayssh 192.168.1.100      # Specific IP
-```
-
-### Remote Ray Cluster
-
-```bash
-# Set remote cluster address
-export RAY_ADDRESS=ray://gpu-cluster.remote:10001
-
-# Work remotely like local
-rayssh                    # Connect remotely
-rayssh ~/my-project       # Upload folder as working dir and work remotely
-rayssh .                  # Upload current directory and work remotely
-```
-
-```bash
-rayssh --help
-```
-
 **Basic Commands:**
 - `rayssh` - Random worker connection
 - `rayssh <ip|node_id|-index>` - Connect to specific node
 - `rayssh <dir>` - Remote mode with directory upload
-- `rayssh <file>` - Submit file as Ray job
-- `rayssh lab [-q] [path]` - Launch Jupyter Lab on a worker node; tails log for URL. With `-q`, exit after showing link.
-  - If no worker is available, you can run: `rayssh -0 lab [-q] [path]` to place Lab on the head node.
-- `rayssh code [-q] [path]` - Launch code-server (VS Code) on a worker node; behaves like `lab`.
-  - If no worker is available, you can run: `rayssh -0 code [-q] [path]` to place it on the head node.
+- `rayssh <file>` - Submit and run file as Ray job
+- `rayssh lab [-q] [path]` - Launch Jupyter Lab on a worker node; tails log for URL. With `-q`, exit after showing link. The optional `path` will be uploaded as working dir.
+- `rayssh code [-q] [path]` - Launch code-server (VS Code) on a worker node; behaves like `lab`. The optional `path` will be uploaded as working dir.
 - `rayssh -l` - Interactive node selection
 - `rayssh --ls` - Print nodes table
 
@@ -132,7 +100,7 @@ rayssh code ~/my-project
 
 Notes:
 - code-server binds like Jupyter; on macOS, 80 becomes 8888 automatically.
-- A password is generated and printed on first start; reuse prints the same.
+- A password is generated for each session.
 
 Start a Jupyter Lab on a worker node that other machines can access:
 
@@ -164,24 +132,7 @@ rayssh ~/train
 
 ## Interactive Shell Features
 
-Once connected, you get a full shell experience:
-
-**🖥️ Shell Commands:**
-- Standard commands: `ls`, `cat`, `grep`, `find`, `ps`, etc.
-- Built-in commands: `cd`, `pwd`, `export`, `pushd`, `popd`, `dirs`
-- File editing: `vim`, `nano` (opens locally, edits remote files)
-
-**⌨️ Interactive Features:**
-- Tab completion for files and commands
-- Command history (up/down arrows)
-- Ctrl-C interrupts current command
-- Ctrl-D or `exit`/`quit` to disconnect
-
-**🔧 Advanced Features:**
-- Interactive programs: `python`, `ipython`, `htop`, `top`
-- Environment persistence across commands
-- Working directory maintained between sessions
-- Signal handling for graceful interruption
+Once connected, you get a full shell experience - do whatever you'd like
 
 ## Configuration
 
@@ -198,21 +149,16 @@ export RAY_CLIENT_RECONNECT_GRACE_PERIOD=60
 
 - Python >= 3.8
 - Ray >= 2.0.0
-- Network access to Ray cluster (for remote mode)
+- Network access to your Ray cluster
+  - For "rayssh <file>" job submission, access to head node is sufficient.
+  - For other features, access to worker nodes is also required.
 
-## Limitations
-
-- Not a full shell implementation - uses Ray Core API
-- Interactive programs may have limited functionality
-- Complex shell features (pipes, redirections) not fully supported
-- File editing opens local editor for remote files
 
 ## Troubleshooting
 
 **Performance:**
-- Use `--ls` to check cluster resources before connecting
-- Consider node workload when selecting target nodes
-- Upload only necessary files for better performance
+
+- Upload only necessary files for better performance. Use ".gitignore" to exclude files from working dir.
 
 ## License
 
