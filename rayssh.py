@@ -186,6 +186,7 @@ def main():
         # Local mode - ensure Ray is initialized
         try:
             import ray as _ray
+
             if not _ray.is_initialized():
                 ensure_ray_initialized()
         except Exception as e:
@@ -211,14 +212,13 @@ def main():
 
     try:
         asyncio.run(terminal.run())
-        print("RaySSH session completed.")
     except KeyboardInterrupt:
         print("\nSession interrupted by user.")
     except Exception as e:
         print(f"Fatal error: {e}")
         sys.exit(1)
     finally:
-        print("Goodbye!")
+        print("👋 Goodbye!")
 
 
 def print_help():

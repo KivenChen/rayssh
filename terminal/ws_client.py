@@ -55,7 +55,13 @@ class TerminalClient:
                         pass
 
         except websockets.exceptions.ConnectionClosed:
-            print("\nConnection closed by server.")
+            # Ensure terminal state is restored before printing any further output
+            try:
+                self.running = False
+                self.shutdown_requested = True
+                await self.cleanup()
+            finally:
+                print("\nConnection closed by server.")
         except Exception as e:
             print(f"Connection error: {e}")
         finally:
@@ -108,7 +114,9 @@ class TerminalClient:
                     sys.stdout.flush()
 
             except websockets.exceptions.ConnectionClosed:
-                print("\nTerminal session ended.")
+                # Signal shutdown and exit loop; cleanup will restore terminal
+                self.running = False
+                self.shutdown_requested = True
                 break
             except asyncio.CancelledError:
                 break
@@ -127,7 +135,10 @@ class TerminalClient:
         self.shutdown_requested = True
 
         # Restore terminal first
-        self.restore_terminal()
+        try:
+            self.restore_terminal()
+        except Exception:
+            pass
 
         # Close WebSocket connection gracefully
         if self.websocket:

@@ -25,6 +25,7 @@ def _select_worker_node_id(allow_head_if_no_worker: bool) -> str:
     # Ensure Ray is initialized prior to state API
     import os as _os
     import ray as _ray
+
     if not _ray.is_initialized():
         addr = _os.environ.get("RAY_ADDRESS")
         if addr:

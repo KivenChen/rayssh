@@ -150,6 +150,7 @@ def ensure_ray_initialized(
             import agent
             import terminal
             import utils
+
             runtime_env["py_modules"] = [agent, terminal, utils]
         except ImportError as e:
             # If modules can't be imported, continue without py_modules
@@ -180,7 +181,10 @@ def ensure_ray_initialized(
             except Exception as e:
                 msg = str(e)
                 # Tolerate repeated client init attempts
-                if "already connected" in msg or "Ray Client is already connected" in msg:
+                if (
+                    "already connected" in msg
+                    or "Ray Client is already connected" in msg
+                ):
                     print("ℹ️ Ray Client already connected; continuing")
                     return
                 raise
@@ -193,7 +197,6 @@ def ensure_ray_initialized(
                 logging_level="FATAL",
                 log_to_driver=False,
                 include_dashboard=False,
-                _temp_dir="/tmp/ray",
                 configure_logging=False,
                 ignore_reinit_error=True,
             )
@@ -208,13 +211,16 @@ def ensure_ray_initialized(
                 import agent
                 import terminal
                 import utils
+
                 local_runtime_env["py_modules"] = [agent, terminal, utils]
             except ImportError as e:
                 print(f"Error importing modules: {e}")
                 pass
 
             try:
-                print(f"🧪 Starting local Ray cluster (cwd as working dir): {os.getcwd()}")
+                print(
+                    f"🧪 Starting local Ray cluster (cwd as working dir): {os.getcwd()}"
+                )
             except Exception:
                 print("🧪 Starting local Ray cluster")
             ray.init(
@@ -281,7 +287,9 @@ def get_head_node_id() -> Optional[str]:
             if (
                 d.get("is_head_node")
                 or d.get("IsHead")
-                or (str(d.get("node_type") or d.get("NodeType") or "").lower() == "head")
+                or (
+                    str(d.get("node_type") or d.get("NodeType") or "").lower() == "head"
+                )
             ):
                 return d.get("NodeID") or d.get("node_id")
         return node_dicts[0].get("NodeID") or node_dicts[0].get("node_id")

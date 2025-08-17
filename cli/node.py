@@ -108,6 +108,7 @@ def print_nodes_table():
         # Initialize Ray only if not already connected
         import ray
         import os as _os
+
         if not ray.is_initialized():
             ray_addr = _os.environ.get("RAY_ADDRESS")
             if ray_addr:
@@ -202,6 +203,7 @@ def interactive_node_selector():
         # Initialize Ray only if not already connected
         import ray
         import os as _os
+
         if not ray.is_initialized():
             ray_addr = _os.environ.get("RAY_ADDRESS")
             if ray_addr:

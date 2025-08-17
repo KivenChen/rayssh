@@ -120,12 +120,16 @@ class RaySSHTerminal:
 
     async def cleanup(self):
         """Clean up resources gracefully."""
-        print("Cleaning up resources...")
-
         # Close WebSocket client first
         if self.client:
             try:
                 await self.client.cleanup()
+                # Ensure prompt moves to new line after raw mode restore
+                try:
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
+                except Exception:
+                    pass
                 print("✓ WebSocket client closed")
             except Exception as e:
                 print(f"Warning: Error closing client: {e}")
@@ -138,4 +142,5 @@ class RaySSHTerminal:
             except Exception as e:
                 print(f"Warning: Error stopping server: {e}")
 
-        print("Cleanup complete.")
+        # Print final cleanup message on a clean line
+        print("Press Enter to confirm exit...")
