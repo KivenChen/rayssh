@@ -42,7 +42,6 @@ class RaySSHTerminal:
     def initialize_ray(self):
         """Initialize Ray connection."""
         if self.is_remote_mode:
-            print("Initializing Ray connection to remote cluster...")
             ensure_ray_initialized(
                 ray_address=self.ray_address, working_dir=self.working_dir
             )
@@ -65,7 +64,7 @@ class RaySSHTerminal:
 
     def start_terminal_actor(self):
         """Start the terminal actor on target node."""
-        print("Starting terminal actor on target node...")
+        print("🌐 Deploying terminal actor...")
 
         # Create terminal actor on target node with working directory if specified
         if self.is_remote_mode and self.working_dir:
@@ -96,10 +95,6 @@ class RaySSHTerminal:
             if not server_info:
                 print("Failed to start terminal server")
                 return
-
-            print(
-                f"Terminal server started on {server_info['hostname']}:{server_info['port']}"
-            )
 
             # Check for shutdown request
             if self.shutdown_requested:

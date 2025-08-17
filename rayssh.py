@@ -43,8 +43,6 @@ def main():
     if len(sys.argv) == 1:
         # No arguments - connect to random worker node (local) or remote HOME
         if ray_address_env:
-            # Remote mode - connect to HOME directory
-            print("🌐 Connecting to remote cluster...")
             working_dir = None  # No working_dir means HOME
         else:
             # Local mode - randomly connect to a worker node
@@ -187,7 +185,9 @@ def main():
     elif node_arg:
         # Local mode - ensure Ray is initialized
         try:
-            ensure_ray_initialized()
+            import ray as _ray
+            if not _ray.is_initialized():
+                ensure_ray_initialized()
         except Exception as e:
             print(f"Error initializing Ray: {e}", file=sys.stderr)
             return 1

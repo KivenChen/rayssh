@@ -6,6 +6,7 @@ import platform
 import subprocess
 import re
 from functools import lru_cache
+import socket
 
 import ray
 
@@ -46,16 +47,16 @@ def parse_node_argument(node_arg: str) -> tuple[str, str]:
 def get_ray_cluster_nodes() -> List[Dict]:
     """Get information about all nodes in the Ray cluster (alive only), normalized.
 
-    Uses the State API helper to ensure a single source of truth.
+    Uses Ray's public nodes() API via our helper.
     Assumes Ray has already been initialized by the caller.
     """
-    nodes, _ = fetch_cluster_nodes_via_state()
+    nodes, _ = fetch_cluster_nodes()
     return nodes
 
 
 def find_node_by_ip(target_ip: str) -> Optional[Dict]:
     """Find a Ray node by its IP address."""
-    nodes, _ = fetch_cluster_nodes_via_state()
+    nodes, _ = fetch_cluster_nodes()
 
     for node in nodes:
         # Check both NodeManagerAddress and internal/external IPs
@@ -73,7 +74,7 @@ def find_node_by_ip(target_ip: str) -> Optional[Dict]:
 
 def find_node_by_id(target_node_id: str) -> Optional[Dict]:
     """Find a Ray node by its node ID."""
-    nodes, _ = fetch_cluster_nodes_via_state()
+    nodes, _ = fetch_cluster_nodes()
 
     for node in nodes:
         node_id = node.get("NodeID")
@@ -145,44 +146,48 @@ def ensure_ray_initialized(
 
         # Add required modules for RaySSH actors
         try:
-            import lab_actor
-            import code_server_actor
-            import shell_actor
-            import utils as utils_module
-
-            runtime_env["py_modules"] = [
-                lab_actor.__file__,
-                code_server_actor.__file__,
-                shell_actor.__file__,
-                utils_module.__file__,
-            ]
-        except ImportError:
+            # Ship the entire project root so remote workers import the same code
+            import agent
+            import terminal
+            import utils
+            runtime_env["py_modules"] = [agent, terminal, utils]
+        except ImportError as e:
             # If modules can't be imported, continue without py_modules
+            print(f"Error importing modules: {e}")
             pass
 
         # Initialize Ray (either local cluster, connect-only, or Ray Client)
         if ray_address and ray_address.startswith("ray://"):
             # Ray Client connection
-            # Only set runtime_env if working_dir is explicitly provided
-            # When working_dir is None, don't upload any directory (use remote HOME)
+            # Always pass runtime_env if available to keep module versions in sync
+            init_kwargs = {
+                "address": ray_address,
+                "logging_level": "FATAL",
+                "log_to_driver": False,
+                "ignore_reinit_error": True,
+            }
+            if runtime_env:
+                init_kwargs["runtime_env"] = runtime_env
+            print(f"🌐 Connecting to Ray cluster: {ray_address}")
             if working_dir is not None:
-                ray.init(
-                    address=ray_address,
-                    runtime_env=runtime_env,
-                    logging_level="FATAL",
-                    log_to_driver=False,
-                    ignore_reinit_error=True,
-                )
-            else:
-                ray.init(
-                    address=ray_address,
-                    logging_level="FATAL",
-                    log_to_driver=False,
-                    ignore_reinit_error=True,
-                )
+                try:
+                    print(f"📦 Uploading working dir: {os.path.abspath(working_dir)}")
+                except Exception:
+                    print("📦 Uploading working dir")
+            try:
+                ray.init(**init_kwargs)
+                # print("🔗 Connected to Ray")
+            except Exception as e:
+                msg = str(e)
+                # Tolerate repeated client init attempts
+                if "already connected" in msg or "Ray Client is already connected" in msg:
+                    print("ℹ️ Ray Client already connected; continuing")
+                    return
+                raise
         elif connect_only:
             # Connect to an existing Ray cluster without starting one
             # address="auto" will attempt to discover a running local cluster
+            print("🔌 Connecting to existing Ray cluster (auto)")
             ray.init(
                 address="auto",
                 logging_level="FATAL",
@@ -192,26 +197,26 @@ def ensure_ray_initialized(
                 configure_logging=False,
                 ignore_reinit_error=True,
             )
+            # print("🔗 Connected to Ray")
         else:
             # Local Ray cluster (may start one if none exists)
             # Include current working directory so remote workers can import local modules
             local_runtime_env = {"working_dir": os.getcwd()}
             # Add required modules for local cluster as well
             try:
-                import lab_actor
-                import code_server_actor
-                import shell_actor
-                import utils as utils_module
-
-                local_runtime_env["py_modules"] = [
-                    lab_actor.__file__,
-                    code_server_actor.__file__,
-                    shell_actor.__file__,
-                    utils_module.__file__,
-                ]
-            except ImportError:
+                # Ship the entire project root so local workers import the same code
+                import agent
+                import terminal
+                import utils
+                local_runtime_env["py_modules"] = [agent, terminal, utils]
+            except ImportError as e:
+                print(f"Error importing modules: {e}")
                 pass
 
+            try:
+                print(f"🧪 Starting local Ray cluster (cwd as working dir): {os.getcwd()}")
+            except Exception:
+                print("🧪 Starting local Ray cluster")
             ray.init(
                 runtime_env=local_runtime_env,
                 logging_level="FATAL",  # Only show fatal errors
@@ -221,6 +226,7 @@ def ensure_ray_initialized(
                 configure_logging=False,  # Don't configure Python logging
                 ignore_reinit_error=True,  # Ignore reinitialization errors
             )
+            print("✅ Local Ray ready")
     except Exception as e:
         raise RuntimeError(f"Failed to initialize Ray: {e}") from e
 
@@ -238,103 +244,120 @@ def get_node_resources(node_info: Dict) -> Dict:
 
 
 def get_head_node_id() -> Optional[str]:
-    """Return the head node's NodeID using Ray State API filters.
+    """Return the head node's NodeID by resolving RAY_ADDRESS host to IP.
 
     Assumes Ray has already been initialized by the caller.
     """
     try:
-        from ray.util import state as ray_state  # type: ignore
+        if not ray.is_initialized():
+            raise RuntimeError(
+                "Ray must be initialized before calling get_head_node_id()"
+            )
+        # Try to derive head IP from RAY_ADDRESS
+        head_ip: Optional[str] = None
+        addr = os.environ.get("RAY_ADDRESS")
+        if addr:
+            try:
+                host_port = addr.split("://", 1)[1] if "://" in addr else addr
+                host = host_port.split(":", 1)[0]
+                # Resolve hostname to IP if necessary
+                head_ip = socket.gethostbyname(host)
+            except Exception:
+                head_ip = None
 
-        nodes = ray_state.list_nodes(filters=[("is_head_node", "=", True)])
-        assert len(nodes) == 1, "There should be exactly one head node"
-        head = nodes[0]
-        # Support both object with attribute and dict-like
-        node_id = getattr(head, "node_id", None)
-        if not node_id and isinstance(head, dict):
-            node_id = head.get("node_id") or head.get("NodeID")
-        return node_id
+        node_dicts = [n for n in ray.nodes() if n.get("Alive")]
+        if not node_dicts:
+            return None
+
+        # Match by IP if we resolved one
+        if head_ip:
+            for d in node_dicts:
+                node_ip = d.get("NodeManagerAddress") or d.get("node_ip")
+                if node_ip == head_ip:
+                    return d.get("NodeID") or d.get("node_id")
+
+        # Fallbacks: flags or first alive node
+        for d in node_dicts:
+            if (
+                d.get("is_head_node")
+                or d.get("IsHead")
+                or (str(d.get("node_type") or d.get("NodeType") or "").lower() == "head")
+            ):
+                return d.get("NodeID") or d.get("node_id")
+        return node_dicts[0].get("NodeID") or node_dicts[0].get("node_id")
     except Exception as e:
-        print(f"Failed to determine head node via Ray State API: {e}")
-        raise RuntimeError(f"Failed to determine head node via Ray State API: {e}")
+        print(f"Failed to determine head node: {e}")
+        raise RuntimeError(f"Failed to determine head node: {e}")
 
 
 @lru_cache(maxsize=1)
-def fetch_cluster_nodes_via_state() -> tuple[list[Dict], Optional[str]]:
-    """Fetch Ray nodes once via State API and return (normalized_nodes, head_node_id).
+def fetch_cluster_nodes() -> tuple[list[Dict], Optional[str]]:
+    """Fetch Ray nodes (no State API) and return (normalized_nodes, head_node_id).
 
     - Assumes Ray has already been initialized by the caller.
     - Normalizes each node to keys: 'NodeID', 'NodeManagerAddress', 'Alive', 'Resources'.
     - Determines head_node_id from the same list by checking common flags.
     """
-    import logging
-    from ray.util import state as ray_state  # type: ignore
-
-    # Temporarily suppress logging from Ray state API
-    ray_logger = logging.getLogger("ray")
-    original_level = ray_logger.level
-    ray_logger.setLevel(logging.WARNING)
+    if not ray.is_initialized():
+        raise RuntimeError(
+            "Ray must be initialized before calling fetch_cluster_nodes()"
+        )
 
     try:
-        raw_nodes = ray_state.list_nodes(address="auto", detail=True)
-    finally:
-        # Restore original logging level
-        ray_logger.setLevel(original_level)
+        raw_nodes = [n for n in ray.nodes() if n.get("Alive")]
+    except Exception as e:
+        raise RuntimeError(f"Failed to list nodes: {e}") from e
 
     if not raw_nodes:
         return [], None
 
+    # Detect head, prefer matching RAY_ADDRESS host to IP
     head_node_id: Optional[str] = None
-    for n in raw_nodes:
-        # Object-like
-        if getattr(n, "is_head_node", False) or getattr(n, "node_type", None) == "head":
-            head_node_id = getattr(n, "node_id", None)
-            break
-        # Dict-like
-        if isinstance(n, dict):
-            if (
-                n.get("is_head_node")
-                or n.get("node_type") == "head"
-                or n.get("nodeType") == "head"
-                or n.get("is_head") is True
-            ):
-                head_node_id = n.get("node_id") or n.get("NodeID")
+    head_ip: Optional[str] = None
+    addr = os.environ.get("RAY_ADDRESS")
+    if addr:
+        try:
+            host_port = addr.split("://", 1)[1] if "://" in addr else addr
+            host = host_port.split(":", 1)[0]
+            head_ip = socket.gethostbyname(host)
+        except Exception:
+            head_ip = None
+
+    if head_ip:
+        for d in raw_nodes:
+            node_ip = d.get("NodeManagerAddress") or d.get("node_ip")
+            if node_ip == head_ip:
+                head_node_id = d.get("NodeID") or d.get("node_id")
                 break
 
-    nodes: list[Dict] = []
-    for n in raw_nodes:
-        if hasattr(n, "to_dict"):
-            d = n.to_dict()
-        elif isinstance(n, dict):
-            d = n
-        else:
-            d = {
-                "NodeID": getattr(n, "node_id", None),
-                "NodeManagerAddress": getattr(n, "node_ip", None),
-                "Alive": getattr(n, "state", "").upper() == "ALIVE",
-                "Resources": getattr(n, "resources_total", {}) or {},
-            }
+    # Fallback to flags
+    for d in raw_nodes:
+        if head_node_id:
+            break
+        if (
+            d.get("is_head_node")
+            or d.get("IsHead")
+            or (str(d.get("node_type") or d.get("NodeType") or "").lower() == "head")
+        ):
+            head_node_id = d.get("NodeID") or d.get("node_id")
+            break
 
+    nodes: list[Dict] = []
+    for d in raw_nodes:
         node_id = d.get("NodeID") or d.get("node_id")
         node_ip = d.get("NodeManagerAddress") or d.get("node_ip")
-        state_alive = (
-            d.get("Alive")
-            if "Alive" in d
-            else (str(d.get("state", "")).upper() == "ALIVE")
-        )
         resources = d.get("Resources") or d.get("resources_total") or {}
 
         nodes.append(
             {
                 "NodeID": node_id,
                 "NodeManagerAddress": node_ip,
-                "NodeName": node_ip,  # Use IP as NodeName for consistency
-                "Alive": bool(state_alive),
+                "NodeName": node_ip,
+                "Alive": True,
                 "Resources": resources,
             }
         )
 
-    # Only return alive nodes
-    nodes = [node for node in nodes if node.get("Alive", False)]
     return nodes, head_node_id
 
 

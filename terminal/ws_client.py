@@ -25,12 +25,12 @@ class TerminalClient:
     async def connect_to_terminal(self, host: str, port: int):
         """Connect to the terminal server and start interactive session."""
         uri = f"ws://{host}:{port}"
-        print(f"Connecting to terminal at {uri}...")
+        print(f"🔌 Connecting to terminal at {uri}...")
 
         try:
             # Connect to WebSocket
             self.websocket = await websockets.connect(uri)
-            print("Connected! Terminal session started.")
+            print("✅ Connected! Terminal session started.")
 
             # Set terminal to raw mode
             self.setup_terminal()

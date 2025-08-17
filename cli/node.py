@@ -7,7 +7,7 @@ import os
 import random
 import sys
 
-from utils import ensure_ray_initialized, fetch_cluster_nodes_via_state
+from utils import ensure_ray_initialized, fetch_cluster_nodes
 
 
 def get_ordered_nodes():
@@ -16,15 +16,23 @@ def get_ordered_nodes():
     Returns (nodes, head_node_index) where nodes is list of alive nodes
     and head_node_index is the index of the head node.
     """
-    nodes, head_node_id = fetch_cluster_nodes_via_state()
+    nodes, head_node_id = fetch_cluster_nodes()
     if not nodes:
         return [], -1
 
-    # Compute head index in this list (fallback to 0 if not found)
+    # Compute head index using returned head_node_id or heuristics
     head_node_index = 0
     if head_node_id:
         for i, node in enumerate(nodes):
-            if node.get("NodeID") == head_node_id:
+            if (node.get("NodeID") or node.get("node_id")) == head_node_id:
+                head_node_index = i
+                break
+    else:
+        # Try to detect head via resource tags if available; otherwise assume first
+        for i, node in enumerate(nodes):
+            res = node.get("Resources", {}) or {}
+            # Some clusters tag head with 'node:__ray_head__' or similar markers
+            if any("head" in str(k).lower() for k in res.keys()):
                 head_node_index = i
                 break
 
@@ -97,10 +105,17 @@ def get_random_worker_node():
 def print_nodes_table():
     """Print a table of available Ray nodes."""
     try:
-        # Ensure Ray is initialized for node listing
-        ensure_ray_initialized()
+        # Initialize Ray only if not already connected
+        import ray
+        import os as _os
+        if not ray.is_initialized():
+            ray_addr = _os.environ.get("RAY_ADDRESS")
+            if ray_addr:
+                ensure_ray_initialized(ray_address=ray_addr, working_dir=None)
+            else:
+                ensure_ray_initialized()
 
-        nodes, head_node_id = fetch_cluster_nodes_via_state()
+        nodes, head_node_id = fetch_cluster_nodes()
         if not nodes:
             print("🚫 No Ray nodes found in the cluster.")
             return 0
@@ -184,8 +199,15 @@ def interactive_node_selector():
     Returns the selected node's IP address or None if cancelled.
     """
     try:
-        # Ensure Ray is initialized for node selection
-        ensure_ray_initialized()
+        # Initialize Ray only if not already connected
+        import ray
+        import os as _os
+        if not ray.is_initialized():
+            ray_addr = _os.environ.get("RAY_ADDRESS")
+            if ray_addr:
+                ensure_ray_initialized(ray_address=ray_addr, working_dir=None)
+            else:
+                ensure_ray_initialized()
 
         # Get nodes in the same order as --ls table
         nodes, head_node_index = get_ordered_nodes()

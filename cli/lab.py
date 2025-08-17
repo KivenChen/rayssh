@@ -16,13 +16,22 @@ import ray
 from agent.lab import LabActor
 from utils import (
     ensure_ray_initialized,
-    fetch_cluster_nodes_via_state,
+    fetch_cluster_nodes,
     get_head_node_id,
 )
 
 
 def _select_worker_node_id(allow_head_if_no_worker: bool) -> str:
-    nodes, head_node_id = fetch_cluster_nodes_via_state()
+    # Ensure Ray is initialized prior to state API
+    import os as _os
+    import ray as _ray
+    if not _ray.is_initialized():
+        addr = _os.environ.get("RAY_ADDRESS")
+        if addr:
+            ensure_ray_initialized(ray_address=addr, working_dir=None)
+        else:
+            ensure_ray_initialized()
+    nodes, head_node_id = fetch_cluster_nodes()
     if not nodes:
         raise RuntimeError("No alive Ray nodes found in the cluster")
 
@@ -91,7 +100,7 @@ def handle_lab_command(argv: List[str]) -> int:
                 print(
                     "Warning: [path] is only used in remote mode (RAY_ADDRESS). Ignoring path."
                 )
-            ensure_ray_initialized()
+            # Already initialized above; no need to init again
     except Exception as e:
         msg = str(e)
         if "Version mismatch" in msg and "Python" in msg:
