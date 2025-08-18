@@ -9,6 +9,8 @@ import os
 import sys
 import termios
 import tty
+import shutil
+import signal
 
 import websockets
 
@@ -21,11 +23,13 @@ class TerminalClient:
         self.original_termios = None
         self.running = False
         self.shutdown_requested = False
+        self.loop = None
 
     async def connect_to_terminal(self, host: str, port: int):
         """Connect to the terminal server and start interactive session."""
         uri = f"ws://{host}:{port}"
         print(f"🔌 Connecting to terminal at {uri}...")
+        self.loop = asyncio.get_running_loop()
 
         try:
             # Connect to WebSocket
@@ -35,6 +39,9 @@ class TerminalClient:
             # Set terminal to raw mode
             self.setup_terminal()
             self.running = True
+
+            # Send initial size
+            self._send_resize()
 
             # Start bidirectional communication
             input_task = asyncio.create_task(self.handle_input())
@@ -70,35 +77,69 @@ class TerminalClient:
             self.original_termios = termios.tcgetattr(sys.stdin.fileno())
             tty.setraw(sys.stdin.fileno())
 
+            # Handle terminal resize
+            signal.signal(signal.SIGWINCH, self._sigwinch_handler)
+
+    def _sigwinch_handler(self, signum, frame):
+        """Signal handler for SIGWINCH."""
+        if self.loop and not self.loop.is_closed():
+            self.loop.call_soon_threadsafe(self._send_resize)
+
+    def _send_resize(self):
+        """Send terminal resize message."""
+        if self.websocket and self.running:
+            try:
+                cols, rows = shutil.get_terminal_size()
+                asyncio.create_task(
+                    self.websocket.send(
+                        json.dumps({"type": "resize", "rows": rows, "cols": cols})
+                    )
+                )
+            except Exception:
+                # Can happen if the socket is closing
+                pass
+
     def restore_terminal(self):
         """Restore terminal to original mode."""
         if self.original_termios and os.isatty(sys.stdin.fileno()):
             termios.tcsetattr(
                 sys.stdin.fileno(), termios.TCSADRAIN, self.original_termios
             )
+            # Restore default SIGWINCH handler
+            signal.signal(signal.SIGWINCH, signal.SIG_DFL)
 
     async def handle_input(self):
         """Read from stdin and send to WebSocket."""
-        loop = asyncio.get_event_loop()
+        queue = asyncio.Queue()
 
-        while self.running and self.websocket and not self.shutdown_requested:
+        def on_stdin_ready():
+            """Callback for when stdin has data."""
             try:
-                # Read single character from stdin
-                char = await loop.run_in_executor(None, sys.stdin.read, 1)
-                if char:
-                    # Send to terminal (including control chars like \x03 for Ctrl-C)
-                    await self.websocket.send(
-                        json.dumps({"type": "input", "data": char})
-                    )
+                data = sys.stdin.read(1024)
+                if data:
+                    queue.put_nowait(data)
                 else:
-                    # EOF on stdin (Ctrl-D). Do not close the session; stop reading input
-                    # and let the server/output dictate when to close.
+                    # EOF
+                    queue.put_nowait(None)
+            except Exception:
+                queue.put_nowait(None)
+
+        self.loop.add_reader(sys.stdin.fileno(), on_stdin_ready)
+
+        try:
+            while self.running and self.websocket and not self.shutdown_requested:
+                data = await queue.get()
+                if data is None:
+                    # EOF on stdin (Ctrl-D).
                     break
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                print(f"Input error: {e}")
-                break
+
+                await self.websocket.send(json.dumps({"type": "input", "data": data}))
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"Input error: {e}")
+        finally:
+            self.loop.remove_reader(sys.stdin.fileno())
 
     async def handle_output(self):
         """Receive from WebSocket and write to stdout."""

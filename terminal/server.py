@@ -92,13 +92,17 @@ class TerminalActor:
             self.working_dir if self.working_dir else os.environ.get("HOME", "/home")
         )
 
+        # Set terminal environment
+        shell_env = os.environ.copy()
+        shell_env["TERM"] = "xterm-256color"
+
         self.shell_process = subprocess.Popen(
             [os.environ.get("SHELL", "/bin/bash")],
             stdin=self.pty_slave,
             stdout=self.pty_slave,
             stderr=self.pty_slave,
             preexec_fn=os.setsid,
-            env=os.environ.copy(),
+            env=shell_env,
             cwd=shell_cwd,
         )
 
@@ -114,24 +118,44 @@ class TerminalActor:
     async def pty_to_websocket(self):
         """Forward data from PTY to WebSocket."""
         loop = asyncio.get_event_loop()
+        buffer = bytearray()
+        last_send_time = time.time()
 
         while self.running and self.websocket:
             try:
                 # Use asyncio to read from PTY (non-blocking)
                 data = await loop.run_in_executor(None, self._read_pty)
                 if data:
-                    # Send data to WebSocket client
+                    buffer.extend(data)
+
+                current_time = time.time()
+                time_since_last_send = current_time - last_send_time
+
+                # Send data if buffer is full, or after a short timeout, or if PTY closed
+                if (
+                    self.websocket
+                    and buffer
+                    and (len(buffer) > 1024 or time_since_last_send > 0.005 or not data)
+                ):
                     await self.websocket.send(
                         json.dumps(
                             {
                                 "type": "output",
-                                "data": data.decode("utf-8", errors="replace"),
+                                "data": buffer.decode("utf-8", errors="replace"),
                             }
                         )
                     )
-                else:
+                    buffer.clear()
+                    last_send_time = current_time
+
+                if not data:
                     # PTY closed
                     break
+
+                # Small sleep to prevent tight loop when there's no data
+                if not data:
+                    await asyncio.sleep(0.01)
+
             except Exception as e:
                 print(f"Error reading from PTY: {e}")
                 break
@@ -301,8 +325,11 @@ class TerminalActor:
         server_thread = threading.Thread(target=run_server, daemon=False)
         server_thread.start()
 
-        # Wait for server to start
-        time.sleep(2)
+        # Wait for server to start by polling for node_info
+        for _ in range(20):  # Poll for up to 2 seconds
+            if self.node_info:
+                break
+            time.sleep(0.1)
 
         return self.get_server_info()
 
