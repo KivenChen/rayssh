@@ -40,19 +40,16 @@ class TerminalClient:
             input_task = asyncio.create_task(self.handle_input())
             output_task = asyncio.create_task(self.handle_output())
 
-            # Wait for either task to complete or shutdown request
-            done, pending = await asyncio.wait(
-                [input_task, output_task], return_when=asyncio.FIRST_COMPLETED
-            )
+            # Keep session running until the server/websocket closes (output task ends)
+            await output_task
 
-            # Cancel remaining tasks gracefully
-            for task in pending:
-                if not task.done():
-                    task.cancel()
-                    try:
-                        await task
-                    except asyncio.CancelledError:
-                        pass
+            # Ensure input task is stopped if still running
+            if not input_task.done():
+                input_task.cancel()
+                try:
+                    await input_task
+                except asyncio.CancelledError:
+                    pass
 
         except websockets.exceptions.ConnectionClosed:
             # Ensure terminal state is restored before printing any further output
@@ -89,11 +86,13 @@ class TerminalClient:
                 # Read single character from stdin
                 char = await loop.run_in_executor(None, sys.stdin.read, 1)
                 if char:
-                    # Send to terminal
+                    # Send to terminal (including control chars like \x03 for Ctrl-C)
                     await self.websocket.send(
                         json.dumps({"type": "input", "data": char})
                     )
                 else:
+                    # EOF on stdin (Ctrl-D). Do not close the session; stop reading input
+                    # and let the server/output dictate when to close.
                     break
             except asyncio.CancelledError:
                 break

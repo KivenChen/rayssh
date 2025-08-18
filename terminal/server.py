@@ -21,7 +21,7 @@ from websockets.server import serve
 from utils import detect_accessible_ip
 
 
-@ray.remote
+@ray.remote(scheduling_strategy="SPREAD")
 class TerminalActor:
     """
     Ray actor that provides a WebSocket-based terminal interface.
@@ -154,7 +154,14 @@ class TerminalActor:
                 if data.get("type") == "input":
                     # Write to PTY
                     input_data = data.get("data", "")
-                    os.write(self.pty_master, input_data.encode("utf-8"))
+                    if isinstance(input_data, str):
+                        # Preserve control characters (e.g., Ctrl-C = \x03, Ctrl-D = \x04)
+                        os.write(
+                            self.pty_master,
+                            input_data.encode("latin1", errors="ignore"),
+                        )
+                    else:
+                        os.write(self.pty_master, bytes(input_data))
                 elif data.get("type") == "resize":
                     # Handle terminal resize
                     rows = data.get("rows", 24)
@@ -162,6 +169,8 @@ class TerminalActor:
                     self._resize_pty(rows, cols)
 
             except websockets.exceptions.ConnectionClosed:
+                # Client disconnected; stop running to allow cleanup
+                self.running = False
                 break
             except Exception as e:
                 print(f"Error processing WebSocket message: {e}")

@@ -66,17 +66,44 @@ class RaySSHTerminal:
         """Start the terminal actor on target node."""
         print("🌐 Deploying terminal actor...")
 
-        # Create terminal actor on target node with working directory if specified
-        if self.is_remote_mode and self.working_dir:
-            # For remote mode with working directory, pass it to the actor
-            self.terminal_actor = TerminalActor.remote(working_dir=self.working_dir)
+        # Remote mode: rely on SPREAD scheduling and cluster resources (head has 0 CPUs)
+        if self.is_remote_mode:
+            if self.working_dir:
+                self.terminal_actor = TerminalActor.remote(working_dir=self.working_dir)
+            else:
+                self.terminal_actor = TerminalActor.remote()
         else:
-            # For local mode or remote mode without working directory
-            self.terminal_actor = TerminalActor.remote()
+            # Local mode: if a target node was resolved, we still deploy anywhere since SPREAD will choose a worker
+            if self.working_dir:
+                self.terminal_actor = TerminalActor.remote(working_dir=self.working_dir)
+            else:
+                self.terminal_actor = TerminalActor.remote()
 
-        # Start the terminal server
-        server_info = ray.get(self.terminal_actor.start_terminal_server.remote())
-        return server_info
+        # Start the terminal server (interruptible wait)
+        start_ref = self.terminal_actor.start_terminal_server.remote()
+        while True:
+            if self.shutdown_requested:
+                print("🛑 Deployment interrupted. Cleaning up...")
+                try:
+                    ray.get(
+                        self.terminal_actor.stop_terminal_server.remote(), timeout=5.0
+                    )
+                except Exception:
+                    pass
+                try:
+                    ray.kill(self.terminal_actor)
+                except Exception:
+                    pass
+                return None
+            try:
+                return ray.get(start_ref, timeout=1.0)
+            except Exception as e:
+                # Continue polling on timeout; re-raise other errors
+                from ray.exceptions import GetTimeoutError
+
+                if isinstance(e, GetTimeoutError):
+                    continue
+                raise
 
     async def run(self):
         """Run the terminal session."""
@@ -93,7 +120,7 @@ class RaySSHTerminal:
             server_info = self.start_terminal_actor()
 
             if not server_info:
-                print("Failed to start terminal server")
+                print("Cancelled starting terminal server")
                 return
 
             # Check for shutdown request
