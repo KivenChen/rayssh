@@ -485,26 +485,31 @@ def handle_code_command(argv: List[str]) -> int:
                 info = None
             if info and info.get("running") and info.get("url"):
                 print("ℹ️  Existing code-server detected. Reusing running server:")
-                print(f"🔗 {info['url']}")
+                BOLD = "\033[1m"
+                RESET = "\033[0m"
+                print(f"   🔗 {BOLD}{info['url']}{RESET}")
                 if info.get("root_dir"):
                     folder_url = (
                         info["url"].rstrip("/")
                         + "/?"
                         + urllib.parse.urlencode({"folder": info["root_dir"]})
                     )
-                    print(f"📁 {folder_url}")
+                    print(f"   📁 {folder_url}")
                 if info.get("password"):
-                    print(f"🔐 PASSWORD: {info['password']}")
+                    print(f"   🔐 PASSWORD: {BOLD}{info['password']}{RESET}")
                 log_path = info.get("log_file")
                 if log_path:
-                    print(f"📝 Log: {log_path}")
+                    print(f"   📝 Log: {log_path}")
             else:
                 print(f"❌ Failed to start code-server: {err}", file=sys.stderr)
                 return 1
         else:
             actual_url = result.get("url")
             if actual_url:
-                # print(f"🔗 {actual_url}")
+                BOLD = "\033[1m"
+                RESET = "\033[0m"
+                # print the highlighted main URL
+                print(f"   🔗 {BOLD}{actual_url}{RESET}")
                 # Print folder link if root_dir resolved
                 rd = result.get("root_dir")
                 if rd:
@@ -513,9 +518,9 @@ def handle_code_command(argv: List[str]) -> int:
                         + "/?"
                         + urllib.parse.urlencode({"folder": rd})
                     )
-                    print(f"🔗 {folder_url}")
+                    print(f"   📁 {folder_url}")
             if result.get("password"):
-                print(f"🔐 PASSWORD: {result['password']}")
+                print(f"   🔐 PASSWORD: {BOLD}{result['password']}{RESET}")
 
         # Tail logs (show only key information)
         try:

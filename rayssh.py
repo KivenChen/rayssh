@@ -146,6 +146,12 @@ def main():
                 )
                 return 1
 
+        # Handle lab and code subcommands with a single extra argument
+        elif sys.argv[1] == "lab":
+            return handle_lab_command(["lab"] + sys.argv[2:])
+        elif sys.argv[1] == "code":
+            return handle_code_command(["code"] + sys.argv[2:])
+
         # Handle -0 lab and -0 code patterns
         elif sys.argv[1] == "-0":
             if sys.argv[2] == "lab":
