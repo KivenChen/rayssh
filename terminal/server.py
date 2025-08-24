@@ -19,6 +19,11 @@ import websockets
 from websockets.server import serve
 
 from utils import detect_accessible_ip
+from .utils import (
+    configure_pty_for_signals,
+    setup_controlling_terminal,
+    handle_ctrl_c_signal,
+)
 
 
 @ray.remote(scheduling_strategy="SPREAD")
@@ -86,18 +91,28 @@ class TerminalActor:
         # Create PTY
         self.pty_master, self.pty_slave = pty.openpty()
 
+        # Configure PTY terminal settings for proper signal handling
+        if configure_pty_for_signals(self.pty_slave):
+            print("✓ PTY configured for normal mode with signal handling")
+        else:
+            print(f"Warning: Could not configure PTY attributes: {e}")
+
         # Start shell process
         # If no working_dir specified, use HOME directory (remote's HOME)
         shell_cwd = (
             self.working_dir if self.working_dir else os.environ.get("HOME", "/home")
         )
 
+        def setup_child():
+            """Set up the child process to properly handle signals."""
+            setup_controlling_terminal(self.pty_slave)
+
         self.shell_process = subprocess.Popen(
             [os.environ.get("SHELL", "/bin/bash")],
             stdin=self.pty_slave,
             stdout=self.pty_slave,
             stderr=self.pty_slave,
-            preexec_fn=os.setsid,
+            preexec_fn=setup_child,
             env=os.environ.copy(),
             cwd=shell_cwd,
         )
@@ -155,6 +170,11 @@ class TerminalActor:
                     # Write to PTY
                     input_data = data.get("data", "")
                     if isinstance(input_data, str):
+                        # Handle Ctrl-C by sending SIGINT to child processes
+                        if ord(input_data) == 3 and self.shell_process:  # Ctrl-C
+                            # Try to handle via child process signaling
+                            handle_ctrl_c_signal(self.shell_process.pid)
+
                         # Preserve control characters (e.g., Ctrl-C = \x03, Ctrl-D = \x04)
                         os.write(
                             self.pty_master,
