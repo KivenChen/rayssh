@@ -158,3 +158,69 @@ def submit_file_job(file_path: str, no_wait: bool = False) -> int:
     except Exception as e:
         print(f"Error submitting job: {e}", file=sys.stderr)
         return 1
+
+
+def submit_shell_command(command: str) -> int:
+    """
+    Submit an arbitrary shell command as a Ray job and stream logs.
+    Respects n_gpus from environment.
+    """
+    try:
+        # Ensure Ray is initialized; use remote if configured
+        ensure_ray_initialized()
+
+        working_dir_opt = "--working-dir=."
+
+        # Parse GPUs from environment variable (supports 'n_gpus' or 'N_GPUS')
+        gpu_env = os.environ.get("n_gpus") or os.environ.get("N_GPUS")
+        entrypoint_num_gpus_arg = None
+        gpu_str = None
+        if gpu_env is not None and gpu_env != "":
+            try:
+                gpu_count = float(gpu_env)
+                if gpu_count < 0:
+                    raise ValueError
+                gpu_str = (
+                    str(int(gpu_count)) if gpu_count.is_integer() else str(gpu_count)
+                )
+                entrypoint_num_gpus_arg = f"--entrypoint-num-gpus={gpu_str}"
+            except Exception:
+                print(
+                    f"Error: Invalid n_gpus value '{gpu_env}'. Must be a number >= 0.",
+                    file=sys.stderr,
+                )
+                return 1
+
+        # Build job submit command to run via bash -lc "<command>"
+        cmd = [
+            "ray",
+            "job",
+            "submit",
+            "--entrypoint-num-cpus=1",
+            working_dir_opt,
+        ]
+        if entrypoint_num_gpus_arg:
+            cmd.append(entrypoint_num_gpus_arg)
+
+        # Prefer runtime_env.yaml if present
+        runtime_env_candidates = ["runtime_env.yaml", "runtime_env.yml"]
+        runtime_env_file = next(
+            (f for f in runtime_env_candidates if os.path.isfile(f)), None
+        )
+        if runtime_env_file:
+            cmd.append(f"--runtime-env={runtime_env_file}")
+
+        cmd += ["--", "bash", "-lc", command]
+
+        print(f"🚀 RaySSH: Submitting command job")
+        print(f"   💬 {command}")
+        if gpu_str is not None:
+            print(f"   🎛️ GPUs: {gpu_str}")
+        print(f"   📋 {' '.join(cmd)}")
+        print()
+
+        result = subprocess.run(cmd, cwd=".")
+        return result.returncode
+    except Exception as e:
+        print(f"Error submitting command job: {e}", file=sys.stderr)
+        return 1

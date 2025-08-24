@@ -18,6 +18,7 @@ from cli import (
     print_nodes_table,
     interactive_node_selector,
     submit_file_job,
+    submit_shell_command,
     handle_lab_command,
     handle_code_command,
 )
@@ -151,6 +152,9 @@ def main():
             return handle_lab_command(["lab"] + sys.argv[2:])
         elif sys.argv[1] == "code":
             return handle_code_command(["code"] + sys.argv[2:])
+        # Handle -- <command>
+        elif sys.argv[1] == "--":
+            return submit_shell_command(sys.argv[2])
 
         # Handle -0 lab and -0 code patterns
         elif sys.argv[1] == "-0":
@@ -168,6 +172,9 @@ def main():
             return handle_lab_command(["lab"] + sys.argv[2:])
         elif sys.argv[1] == "code":
             return handle_code_command(["code"] + sys.argv[2:])
+        elif sys.argv[1] == "--":
+            # Join the rest as a single command string
+            return submit_shell_command(" ".join(sys.argv[2:]))
         elif sys.argv[1] == "-0" and len(sys.argv) >= 4:
             if sys.argv[2] == "lab":
                 return handle_lab_command(["-0", "lab"] + sys.argv[3:])
