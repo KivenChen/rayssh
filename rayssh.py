@@ -240,29 +240,21 @@ def print_help():
 RaySSH: Ray-native terminal tool
 
 Usage:
-    rayssh                          # Randomly connect to a worker node (local) or remote HOME
+    rayssh                          # Randomly connect to a worker node at remote HOME
     rayssh <ip|node_id|-index>      # Connect to specific node (local mode)
     rayssh <dir>                    # Remote mode with directory upload (requires RAY_ADDRESS)
-    rayssh <file>                   # Submit file as Ray job (experimental)
-    rayssh -q <file>                # Submit file as Ray job, no-wait mode
+    rayssh [-q] <file>              # Submit file as Ray job, -q for no-wait
     rayssh -l                       # Interactive node selection
     rayssh --ls                     # Print nodes table
-    rayssh lab [-q] [path]          # Launch Jupyter Lab on a worker node
-    rayssh code [-q] [path]         # Launch code-server on a worker node
-    rayssh -0 lab [-q] [path]       # Launch lab on head node
-    rayssh -0 code [-q] [path]      # Launch code-server on head node
+    rayssh [lab|code] [path]        # Launch Jupyter Lab / code-server on remote
+    rayssh -- <command>             # Submit shell command as job
 
 Options:
     -h, --help                      # Show help
     -l, --list, --show              # Interactive node selection
     --ls                            # Print nodes table
     -q                              # Quick mode (no-wait for jobs)
-    lab options:
-        -q                          # Tail log until link then exit; server keeps running
-        [path]                      # In remote mode, upload path and set as root; else open ~
-    code options:
-        -q                          # Tail log until ready then exit; server keeps running
-        [path]                      # In remote mode, upload path and set as root; else open ~
+    -- <command>                    # Submit shell command as job
 
 Examples:
     rayssh                          # Random worker node
@@ -274,10 +266,11 @@ Examples:
     rayssh [-q] script.py           # Submit Python job and wait. "-q" for no-wait.
     rayssh lab                      # Launch Jupyter Lab on worker node
     rayssh code ./src               # Launch code-server with uploaded directory
-    n_gpus=8 rayssh train.py        # GPUs to request for job submission
+    rayssh -- nvidia-smi            # Submit shell command as job and tail logs
+    n_gpus=8 rayssh train.py        # GPUs to request for job (through --entrypoint-num-gpus)
 
 Environment Variables:
-    RAY_ADDRESS=ray://host:port     # Enable remote mode with directory upload
+    RAY_ADDRESS=ray://host:port     # Enable remote mode
 
 🖥️  Terminal features: Real-time shell via WebSockets, graceful shutdown
 🌐 Remote mode: Upload local directories, work on remote clusters  
