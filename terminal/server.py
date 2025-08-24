@@ -113,7 +113,9 @@ class TerminalActor:
             stdout=self.pty_slave,
             stderr=self.pty_slave,
             preexec_fn=setup_child,
-            env=os.environ.copy(),
+            env=(lambda e: (e.update({"TERM": e.get("TERM", "xterm-256color")})) or e)(
+                os.environ.copy()
+            ),
             cwd=shell_cwd,
         )
 
@@ -135,15 +137,8 @@ class TerminalActor:
                 # Use asyncio to read from PTY (non-blocking)
                 data = await loop.run_in_executor(None, self._read_pty)
                 if data:
-                    # Send data to WebSocket client
-                    await self.websocket.send(
-                        json.dumps(
-                            {
-                                "type": "output",
-                                "data": data.decode("utf-8", errors="replace"),
-                            }
-                        )
-                    )
+                    # Send raw bytes to WebSocket client (binary frame)
+                    await self.websocket.send(data)
                 else:
                     # PTY closed
                     break
