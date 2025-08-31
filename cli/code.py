@@ -409,7 +409,19 @@ def handle_code_command(argv: List[str]) -> int:
             print(f"Error initializing Ray: {e}", file=sys.stderr)
         return 1
 
-    actor_name = f"rayssh_code_on_worker_beta08_{worker_node_id}"
+    # Singleton CodeServerActor per node, include node IP in name
+    try:
+        nodes, _ = fetch_cluster_nodes()
+        node_ip = None
+        for n in nodes:
+            if n.get("NodeID") == worker_node_id:
+                node_ip = n.get("NodeManagerAddress")
+                break
+        safe_ip = (node_ip or "unknown").replace(".", "-")
+    except Exception:
+        safe_ip = "unknown"
+
+    actor_name = f"rayssh_code_{safe_ip}"
     try:
         # Try to reuse an existing named actor first
         try:

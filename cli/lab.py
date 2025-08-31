@@ -137,17 +137,28 @@ def handle_lab_command(argv: List[str]) -> int:
             print(f"Error initializing Ray: {e}", file=sys.stderr)
         return 1
 
-    # Singleton LabActor per node
-    actor_name = f"rayssh_lab_on_worker_beta02_{worker_node_id}"
+    # Singleton LabActor per node, include node IP in the name
+    try:
+        nodes, _ = fetch_cluster_nodes()
+        node_ip = None
+        for n in nodes:
+            if n.get("NodeID") == worker_node_id:
+                node_ip = n.get("NodeManagerAddress")
+                break
+        safe_ip = (node_ip or "unknown").replace(".", "-")
+    except Exception:
+        safe_ip = "unknown"
+
+    actor_name = f"rayssh_lab_{safe_ip}"
     try:
         try:
-            cur_lab_actor = ray.get_actor(actor_name, namespace="rayssh_lab")
+            cur_lab_actor = ray.get_actor(actor_name, namespace="rayssh")
         except Exception:
             # Modules are now available job-wide via ray.init runtime_env
             actor_options = {
                 "name": actor_name,
                 "lifetime": "detached",
-                "namespace": "rayssh_lab",
+                "namespace": "rayssh",
                 "scheduling_strategy": ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
                     node_id=worker_node_id, soft=False
                 ),

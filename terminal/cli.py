@@ -85,8 +85,18 @@ class RaySSHTerminal:
                 # No specific target, use SPREAD
                 actor_options["scheduling_strategy"] = "SPREAD"
 
-        # Create terminal actor
+        # Create terminal actor (name includes node IP when in cluster mode)
         try:
+            if not self.is_remote_mode:
+                target_ip = None
+                try:
+                    target_ip = self.target_node.get("NodeManagerAddress") if self.target_node else None
+                except Exception:
+                    target_ip = None
+                if target_ip:
+                    safe_ip = str(target_ip).replace(".", "-")
+                    actor_options["name"] = f"rayssh_terminal_{safe_ip}"
+                    actor_options["namespace"] = "rayssh"
             if self.working_dir:
                 self.terminal_actor = TerminalActor.options(**actor_options).remote(working_dir=self.working_dir)
             else:
