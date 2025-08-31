@@ -26,7 +26,7 @@ from .utils import (
 )
 
 
-@ray.remote(scheduling_strategy="SPREAD", num_gpus=0)
+@ray.remote(num_gpus=0)
 class TerminalActor:
     """
     Ray actor that provides a WebSocket-based terminal interface.

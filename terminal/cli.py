@@ -52,7 +52,7 @@ class RaySSHTerminal:
             print("Initializing Ray...")
             ensure_ray_initialized()
 
-            # Find target node for local mode
+            # Find target node for cluster connection
             self.target_node = find_target_node(self.node_arg)
             if not self.target_node:
                 print(f"Could not find target node: {self.node_arg}")
@@ -74,18 +74,36 @@ class RaySSHTerminal:
         else:
             actor_options = {}
 
-        # Remote mode: rely on SPREAD scheduling and cluster resources (head has 0 CPUs)
+        # Configure scheduling strategy based on mode and target node
         if self.is_remote_mode:
-            if self.working_dir:
-                self.terminal_actor = TerminalActor.options(**actor_options).remote(working_dir=self.working_dir)
-            else:
-                self.terminal_actor = TerminalActor.options(**actor_options).remote()
+            # Ray Client mode: use SPREAD scheduling (head has 0 CPUs)
+            actor_options["scheduling_strategy"] = "SPREAD"
         else:
-            # Local mode: if a target node was resolved, we still deploy anywhere since SPREAD will choose a worker
+            # Cluster connection: if user specified a target node, place actor there specifically
+            if self.target_node and self.target_node.get("NodeID"):
+                target_node_id = self.target_node["NodeID"]
+                target_ip = self.target_node["NodeManagerAddress"]
+                print(f"🎯 Targeting specific node: {target_ip} (ID: {target_node_id[:8]}...)")
+                actor_options["scheduling_strategy"] = ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
+                    node_id=target_node_id, soft=False
+                )
+            else:
+                # No specific target, use SPREAD
+                actor_options["scheduling_strategy"] = "SPREAD"
+
+        # Create terminal actor
+        try:
             if self.working_dir:
                 self.terminal_actor = TerminalActor.options(**actor_options).remote(working_dir=self.working_dir)
             else:
                 self.terminal_actor = TerminalActor.options(**actor_options).remote()
+        except Exception as e:
+            if not self.is_remote_mode and self.target_node:
+                print(f"❌ Failed to place actor on target node {self.target_node['NodeManagerAddress']}: {e}")
+                print("   The node may be busy, out of resources, or have conflicting actors.")
+                return None
+            else:
+                raise
 
         # Start the terminal server (interruptible wait)
         start_ref = self.terminal_actor.start_terminal_server.remote()
@@ -138,11 +156,15 @@ class RaySSHTerminal:
 
             # Connect to terminal
             self.client = TerminalClient()
-            # In remote mode, use the actual IP from server_info instead of "remote"
-            if self.is_remote_mode:
-                connection_host = server_info["ip"]
-            else:
-                connection_host = self.target_node["NodeManagerAddress"]
+            # Always use the actual IP from server_info (where the actor is actually running)
+            connection_host = server_info["ip"]
+            
+            # Check for IP mismatch and warn user BEFORE connecting
+            if self.target_node:
+                requested_ip = self.target_node["NodeManagerAddress"]
+                if connection_host != requested_ip:
+                    print(f"⚠️  WARNING: You requested {requested_ip} but actor was placed on {connection_host}")
+                    print(f"   This may happen if the target node is busy or unavailable.")
 
             await self.client.connect_to_terminal(connection_host, server_info["port"])
 

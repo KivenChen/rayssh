@@ -46,7 +46,7 @@ def main():
         if ray_address_env:
             working_dir = None  # No working_dir means HOME
         else:
-            # Local mode - randomly connect to a worker node
+            # Cluster connection - randomly connect to a worker node
             try:
                 ensure_ray_initialized()
                 selected_node = get_random_worker_node()
@@ -198,7 +198,7 @@ def main():
             print(f"Error initializing Ray: {e}", file=sys.stderr)
             return 1
     elif node_arg:
-        # Local mode - ensure Ray is initialized
+        # Cluster connection - ensure Ray is initialized
         try:
             import ray as _ray
 
@@ -222,7 +222,7 @@ def main():
         # Ray client mode without working directory - use RaySSHTerminal in remote mode
         terminal = RaySSHTerminal(None, ray_address=ray_address_env, working_dir=None)
     else:
-        # Local mode - connect to specific node
+        # Cluster connection - connect to specific node
         terminal = RaySSHTerminal(node_arg)
 
     try:
@@ -243,7 +243,7 @@ RaySSH: Ray-native terminal tool
 
 Usage:
     rayssh                          # Randomly connect to a worker node at remote HOME
-    rayssh <ip|node_id|-index>      # Connect to specific node (local mode)
+    rayssh <ip|node_id|-index>      # Connect to specific node
     rayssh <dir>                    # Remote mode with directory upload (requires RAY_ADDRESS)
     rayssh [-q] <file>              # Submit file as Ray job, -q for no-wait
     rayssh -l                       # Interactive node selection
