@@ -19,6 +19,9 @@ from utils import (
     fetch_cluster_nodes,
     get_head_node_id,
     parse_n_gpus_from_env,
+    load_last_session_preferred_ip,
+    find_node_by_ip,
+    write_last_session_node_ip,
 )
 
 
@@ -79,9 +82,16 @@ def handle_lab_command(argv: List[str]) -> int:
         else:
             lab_path = a
 
-    # Placement - state API will initialize Ray automatically
+    # Placement - prefer last session IP if available
     try:
-        worker_node_id = _select_worker_node_id(allow_head_if_no_worker)
+        prefer_ip = load_last_session_preferred_ip()
+        worker_node_id = None
+        if prefer_ip:
+            node = find_node_by_ip(prefer_ip)
+            if node and node.get("Alive"):
+                worker_node_id = node.get("NodeID")
+        if not worker_node_id:
+            worker_node_id = _select_worker_node_id(allow_head_if_no_worker)
     except Exception as e:
         print(f"Error selecting node: {e}", file=sys.stderr)
         return 1
@@ -179,6 +189,17 @@ def handle_lab_command(argv: List[str]) -> int:
         actual_url = result.get("url")
         if actual_url:
             print(f"🔗 {actual_url}")
+        # Persist last session preference (by IP)
+        try:
+            nodes, _ = fetch_cluster_nodes()
+            for n in nodes:
+                if n.get("NodeID") == worker_node_id:
+                    ip = n.get("NodeManagerAddress")
+                    if ip:
+                        write_last_session_node_ip(ip)
+                    break
+        except Exception:
+            pass
 
     # Tail logs (show only key information)
     try:

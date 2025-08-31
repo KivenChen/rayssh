@@ -20,6 +20,9 @@ from utils import (
     fetch_cluster_nodes,
     get_head_node_id,
     parse_n_gpus_from_env,
+    load_last_session_preferred_ip,
+    find_node_by_ip,
+    write_last_session_node_ip,
 )
 
 
@@ -323,15 +326,45 @@ def handle_code_command(argv: List[str]) -> int:
         args = argv[1:]
 
     quick = False
+    explicit_ip: Optional[str] = None
     code_path: Optional[str] = None
+    # Extract non-flag tokens (order-preserving); prefer first as IP if it looks like one
+    non_flags: list[str] = []
     for a in args:
         if a == "-q":
             quick = True
         else:
-            code_path = a
+            non_flags.append(a)
+    if non_flags:
+        # If the first non-flag looks like an IP, treat it as target IP
+        from utils import is_valid_ip as _is_ip
+        if _is_ip(non_flags[0]):
+            explicit_ip = non_flags[0]
+            if len(non_flags) >= 2:
+                code_path = non_flags[1]
+        else:
+            # No explicit IP; treat first token as potential path
+            code_path = non_flags[0]
 
     try:
-        worker_node_id = _select_worker_node_id(allow_head_if_no_worker)
+        worker_node_id = None
+        # Highest priority: explicit IP from CLI
+        if explicit_ip:
+            node = find_node_by_ip(explicit_ip)
+            if not node or not node.get("Alive"):
+                print(f"❌ Specified IP not found/alive: {explicit_ip}", file=sys.stderr)
+                return 1
+            worker_node_id = node.get("NodeID")
+        else:
+            # Next: last session preferred IP
+            prefer_ip = load_last_session_preferred_ip()
+            if prefer_ip:
+                node = find_node_by_ip(prefer_ip)
+                if node and node.get("Alive"):
+                    worker_node_id = node.get("NodeID")
+            # Fallback: pick a worker (or head with -0)
+            if not worker_node_id:
+                worker_node_id = _select_worker_node_id(allow_head_if_no_worker)
     except Exception as e:
         print(f"Error selecting node: {e}", file=sys.stderr)
         return 1
@@ -533,6 +566,17 @@ def handle_code_command(argv: List[str]) -> int:
                     print(f"   📁 {folder_url}")
             if result.get("password"):
                 print(f"   🔐 PASSWORD: {BOLD}{result['password']}{RESET}")
+            # Persist last session preference (by IP)
+            try:
+                nodes, _ = fetch_cluster_nodes()
+                for n in nodes:
+                    if n.get("NodeID") == worker_node_id:
+                        ip = n.get("NodeManagerAddress")
+                        if ip:
+                            write_last_session_node_ip(ip)
+                        break
+            except Exception:
+                pass
 
         # Tail logs (show only key information)
         try:

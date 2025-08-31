@@ -7,6 +7,7 @@ import subprocess
 import re
 from functools import lru_cache
 import socket
+import json
 
 import ray
 
@@ -101,6 +102,16 @@ def find_node_by_id(target_node_id: str) -> Optional[Dict]:
         ):
             return node
 
+    return None
+
+
+def find_ip_by_node_id(target_node_id: str) -> Optional[str]:
+    """Return the NodeManagerAddress for the given NodeID if alive."""
+    nodes, _ = fetch_cluster_nodes()
+    for node in nodes:
+        node_id = node.get("NodeID")
+        if node_id and node_id == target_node_id:
+            return node.get("NodeManagerAddress")
     return None
 
 
@@ -506,6 +517,35 @@ def filter_raylet_warnings(text: str) -> str:
         return text
     raylet_warning_pattern = r"\(raylet\) \[.*?\] \(raylet\) file_system_monitor\.cc.*?Object creation will fail if spilling is required\.\s*"
     return re.sub(raylet_warning_pattern, "", text, flags=re.MULTILINE | re.DOTALL)
+
+
+# ============ Last session preference helpers ============
+
+def _last_session_path() -> str:
+    return os.path.expanduser("~/.rayssh/last_session.json")
+
+
+def load_last_session_preferred_ip() -> Optional[str]:
+    try:
+        path = _last_session_path()
+        if not os.path.isfile(path):
+            return None
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        ip = data.get("node_ip")
+        return ip if isinstance(ip, str) and ip else None
+    except Exception:
+        return None
+
+
+def write_last_session_node_ip(node_ip: str) -> None:
+    try:
+        os.makedirs(os.path.expanduser("~/.rayssh"), exist_ok=True)
+        payload = {"node_ip": node_ip}
+        with open(_last_session_path(), "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+    except Exception:
+        pass
 
 
 def download_code_server_if_needed(os_name: str, arch: str) -> Optional[str]:

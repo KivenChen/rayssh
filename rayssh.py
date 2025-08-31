@@ -10,6 +10,8 @@ import os
 import signal
 import subprocess
 import sys
+import json
+from datetime import datetime
 
 from terminal import RaySSHTerminal
 from cli import (
@@ -22,7 +24,7 @@ from cli import (
     handle_lab_command,
     handle_code_command,
 )
-from utils import ensure_ray_initialized
+from utils import ensure_ray_initialized, find_node_by_ip
 
 
 def signal_handler(signum, frame):
@@ -49,9 +51,28 @@ def main():
             # Cluster connection - randomly connect to a worker node
             try:
                 ensure_ray_initialized()
-                selected_node = get_random_worker_node()
-                node_arg = selected_node.get("NodeManagerAddress")
-                print(f"🎲 Randomly connecting to worker node: {node_arg}")
+                # Try previous session first
+                last_path = os.path.expanduser("~/.rayssh/last_session.json")
+                prefer_ip = None
+                try:
+                    if os.path.isfile(last_path):
+                        with open(last_path, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                            prefer_ip = data.get("node_ip")
+                    if prefer_ip:
+                        node_info = find_node_by_ip(prefer_ip)
+                        if node_info and node_info.get("Alive"):
+                            node_arg = prefer_ip
+                            print(f"🔁 Reconnecting to previous node: {node_arg}")
+                        else:
+                            prefer_ip = None
+                except Exception:
+                    prefer_ip = None
+
+                if not node_arg:
+                    selected_node = get_random_worker_node()
+                    node_arg = selected_node.get("NodeManagerAddress")
+                    print(f"🎲 Connecting to worker node: {node_arg}")
             except ValueError as e:
                 print(f"Error: {e}")
                 return 1
@@ -224,6 +245,17 @@ def main():
     else:
         # Cluster connection - connect to specific node (even with RAY_ADDRESS set)
         terminal = RaySSHTerminal(node_arg, ray_address=ray_address_env)
+
+    # Persist last session info for cluster node connections
+    try:
+        if node_arg and not ray_address_env:
+            os.makedirs(os.path.expanduser("~/.rayssh"), exist_ok=True)
+            last_path = os.path.expanduser("~/.rayssh/last_session.json")
+            payload = {"node_ip": node_arg, "timestamp": datetime.now().isoformat(timespec="seconds")}
+            with open(last_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+    except Exception:
+        pass
 
     try:
         asyncio.run(terminal.run())
