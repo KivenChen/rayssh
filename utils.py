@@ -11,6 +11,24 @@ import socket
 import ray
 
 
+def parse_n_gpus_from_env() -> Optional[float]:
+    """Parse n_gpus from environment variables (supports 'n_gpus' or 'N_GPUS').
+    
+    Returns:
+        GPU count as float, or None if not specified or invalid
+    """
+    gpu_env = os.environ.get("n_gpus") or os.environ.get("N_GPUS")
+    if gpu_env is not None and gpu_env != "":
+        try:
+            gpu_count = float(gpu_env)
+            if gpu_count < 0:
+                raise ValueError("GPU count must be >= 0")
+            return gpu_count
+        except Exception:
+            return None
+    return None
+
+
 def is_valid_ip(ip_str: str) -> bool:
     """Check if the given string is a valid IP address."""
     try:

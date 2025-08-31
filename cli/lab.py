@@ -18,6 +18,7 @@ from utils import (
     ensure_ray_initialized,
     fetch_cluster_nodes,
     get_head_node_id,
+    parse_n_gpus_from_env,
 )
 
 
@@ -85,6 +86,11 @@ def handle_lab_command(argv: List[str]) -> int:
         print(f"Error selecting node: {e}", file=sys.stderr)
         return 1
 
+    # Parse GPU requirements from environment
+    n_gpus = parse_n_gpus_from_env()
+    if n_gpus is not None:
+        print(f"🎛️ GPUs requested: {n_gpus}")
+
     # Initialize Ray (may already be initialized by state API, but ensure proper configuration)
     ray_address_env = os.environ.get("RAY_ADDRESS")
     try:
@@ -128,14 +134,17 @@ def handle_lab_command(argv: List[str]) -> int:
             cur_lab_actor = ray.get_actor(actor_name, namespace="rayssh_lab")
         except Exception:
             # Modules are now available job-wide via ray.init runtime_env
-            cur_lab_actor = LabActor.options(
-                name=actor_name,
-                lifetime="detached",
-                namespace="rayssh_lab",
-                scheduling_strategy=ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
+            actor_options = {
+                "name": actor_name,
+                "lifetime": "detached",
+                "namespace": "rayssh_lab",
+                "scheduling_strategy": ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
                     node_id=worker_node_id, soft=False
                 ),
-            ).remote()
+            }
+            if n_gpus is not None:
+                actor_options["num_gpus"] = n_gpus
+            cur_lab_actor = LabActor.options(**actor_options).remote()
     except Exception as e:
         print(f"Error creating LabActor: {e}", file=sys.stderr)
         return 1

@@ -10,7 +10,7 @@ from utils import detect_accessible_ip, adjust_port_for_macos, quote_shell_singl
 import ray
 
 
-@ray.remote
+@ray.remote(num_gpus=0)
 class CodeServerActor:
     def __init__(self):
         self.cwd = os.getcwd()

@@ -18,7 +18,7 @@ def _detect_accessible_ip() -> str:
     return detect_accessible_ip()
 
 
-@ray.remote
+@ray.remote(num_gpus=0)
 class LabActor:
     """
     Ray actor that launches a Jupyter Lab server on the node where it is placed.

@@ -26,7 +26,7 @@ from .utils import (
 )
 
 
-@ray.remote(scheduling_strategy="SPREAD")
+@ray.remote(scheduling_strategy="SPREAD", num_gpus=0)
 class TerminalActor:
     """
     Ray actor that provides a WebSocket-based terminal interface.
@@ -165,10 +165,14 @@ class TerminalActor:
                     # Write to PTY
                     input_data = data.get("data", "")
                     if isinstance(input_data, str):
-                        # Handle Ctrl-C by sending SIGINT to child processes
+                        # Handle Ctrl-C: first try to signal child processes, 
+                        # if no children, let PTY handle it normally (for line editing)
                         if ord(input_data) == 3 and self.shell_process:  # Ctrl-C
                             # Try to handle via child process signaling
-                            handle_ctrl_c_signal(self.shell_process.pid)
+                            handled = handle_ctrl_c_signal(self.shell_process.pid)
+                            if handled:
+                                # Signal was sent to children, don't pass Ctrl-C to PTY
+                                continue
 
                         # Preserve control characters (e.g., Ctrl-C = \x03, Ctrl-D = \x04)
                         os.write(

@@ -19,6 +19,7 @@ from utils import (
     ensure_ray_initialized,
     fetch_cluster_nodes,
     get_head_node_id,
+    parse_n_gpus_from_env,
 )
 
 
@@ -335,6 +336,11 @@ def handle_code_command(argv: List[str]) -> int:
         print(f"Error selecting node: {e}", file=sys.stderr)
         return 1
 
+    # Parse GPU requirements from environment
+    n_gpus = parse_n_gpus_from_env()
+    if n_gpus is not None:
+        print(f"🎛️ GPUs requested: {n_gpus}")
+
     ray_address_env = os.environ.get("RAY_ADDRESS")
     try:
         if ray_address_env:
@@ -446,25 +452,31 @@ def handle_code_command(argv: List[str]) -> int:
                         return 1
 
                     # Now create the named detached actor without shipping (installed under ~/.rayssh)
-                    code_actor = CodeServerActor.options(
-                        name=actor_name,
-                        lifetime="detached",
-                        namespace="rayssh",
-                        scheduling_strategy=ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
+                    actor_options = {
+                        "name": actor_name,
+                        "lifetime": "detached",
+                        "namespace": "rayssh",
+                        "scheduling_strategy": ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
                             node_id=worker_node_id, soft=False
                         ),
-                    ).remote()
+                    }
+                    if n_gpus is not None:
+                        actor_options["num_gpus"] = n_gpus
+                    code_actor = CodeServerActor.options(**actor_options).remote()
                     print("✅ code-server installed and ready on target node")
                 else:
                     # Create the named detached actor without shipping
-                    code_actor = CodeServerActor.options(
-                        name=actor_name,
-                        lifetime="detached",
-                        namespace="rayssh",
-                        scheduling_strategy=ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
+                    actor_options = {
+                        "name": actor_name,
+                        "lifetime": "detached",
+                        "namespace": "rayssh",
+                        "scheduling_strategy": ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
                             node_id=worker_node_id, soft=False
                         ),
-                    ).remote()
+                    }
+                    if n_gpus is not None:
+                        actor_options["num_gpus"] = n_gpus
+                    code_actor = CodeServerActor.options(**actor_options).remote()
             finally:
                 try:
                     ray.kill(probe_actor)

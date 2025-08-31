@@ -10,7 +10,7 @@ import ray
 
 from .server import TerminalActor
 from .ws_client import TerminalClient
-from utils import ensure_ray_initialized, find_target_node
+from utils import ensure_ray_initialized, find_target_node, parse_n_gpus_from_env
 
 
 class RaySSHTerminal:
@@ -66,18 +66,26 @@ class RaySSHTerminal:
         """Start the terminal actor on target node."""
         print("🌐 Deploying terminal actor...")
 
+        # Parse GPU requirements from environment
+        n_gpus = parse_n_gpus_from_env()
+        if n_gpus is not None:
+            print(f"🎛️ GPUs requested: {n_gpus}")
+            actor_options = {"num_gpus": n_gpus}
+        else:
+            actor_options = {}
+
         # Remote mode: rely on SPREAD scheduling and cluster resources (head has 0 CPUs)
         if self.is_remote_mode:
             if self.working_dir:
-                self.terminal_actor = TerminalActor.remote(working_dir=self.working_dir)
+                self.terminal_actor = TerminalActor.options(**actor_options).remote(working_dir=self.working_dir)
             else:
-                self.terminal_actor = TerminalActor.remote()
+                self.terminal_actor = TerminalActor.options(**actor_options).remote()
         else:
             # Local mode: if a target node was resolved, we still deploy anywhere since SPREAD will choose a worker
             if self.working_dir:
-                self.terminal_actor = TerminalActor.remote(working_dir=self.working_dir)
+                self.terminal_actor = TerminalActor.options(**actor_options).remote(working_dir=self.working_dir)
             else:
-                self.terminal_actor = TerminalActor.remote()
+                self.terminal_actor = TerminalActor.options(**actor_options).remote()
 
         # Start the terminal server (interruptible wait)
         start_ref = self.terminal_actor.start_terminal_server.remote()
