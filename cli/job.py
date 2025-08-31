@@ -4,6 +4,7 @@ Job submission utilities for RaySSH CLI.
 """
 
 import os
+import shlex
 import subprocess
 import sys
 
@@ -210,7 +211,8 @@ def submit_shell_command(command: str) -> int:
         if runtime_env_file:
             cmd.append(f"--runtime-env={runtime_env_file}")
 
-        cmd += ["--", "bash", "-lc", command]
+        # Properly quote the command for bash -lc
+        cmd += ["--", "bash", "-lc", shlex.quote(command)]
 
         print(f"🚀 RaySSH: Submitting command job")
         print(f"   💬 {command}")

@@ -154,7 +154,8 @@ def main():
             return handle_code_command(["code"] + sys.argv[2:])
         # Handle -- <command>
         elif sys.argv[1] == "--":
-            return submit_shell_command(sys.argv[2])
+            import shlex
+            return submit_shell_command(shlex.join(sys.argv[2:]))
 
         # Handle -0 lab and -0 code patterns
         elif sys.argv[1] == "-0":
@@ -173,8 +174,9 @@ def main():
         elif sys.argv[1] == "code":
             return handle_code_command(["code"] + sys.argv[2:])
         elif sys.argv[1] == "--":
-            # Join the rest as a single command string
-            return submit_shell_command(" ".join(sys.argv[2:]))
+            # Join the rest as a properly quoted command string
+            import shlex
+            return submit_shell_command(shlex.join(sys.argv[2:]))
         elif sys.argv[1] == "-0" and len(sys.argv) >= 4:
             if sys.argv[2] == "lab":
                 return handle_lab_command(["-0", "lab"] + sys.argv[3:])
