@@ -26,7 +26,8 @@ class RaySSHTerminal:
         self.target_node = None
         self.client = None
         self.shutdown_requested = False
-        self.is_remote_mode = ray_address is not None
+        # Remote mode only when ray_address is set AND no specific node is requested
+        self.is_remote_mode = ray_address is not None and node_arg is None
         self._setup_signal_handlers()
 
     def _setup_signal_handlers(self):
@@ -49,7 +50,6 @@ class RaySSHTerminal:
             # The terminal actor will be deployed remotely
             self.target_node = {"NodeManagerAddress": "remote", "NodeName": "remote"}
         else:
-            print("Initializing Ray...")
             ensure_ray_initialized()
 
             # Find target node for cluster connection
@@ -57,10 +57,6 @@ class RaySSHTerminal:
             if not self.target_node:
                 print(f"Could not find target node: {self.node_arg}")
                 sys.exit(1)
-
-            print(
-                f"Target node: {self.target_node['NodeName']} ({self.target_node['NodeManagerAddress']})"
-            )
 
     def start_terminal_actor(self):
         """Start the terminal actor on target node."""
@@ -82,8 +78,6 @@ class RaySSHTerminal:
             # Cluster connection: if user specified a target node, place actor there specifically
             if self.target_node and self.target_node.get("NodeID"):
                 target_node_id = self.target_node["NodeID"]
-                target_ip = self.target_node["NodeManagerAddress"]
-                print(f"🎯 Targeting specific node: {target_ip} (ID: {target_node_id[:8]}...)")
                 actor_options["scheduling_strategy"] = ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
                     node_id=target_node_id, soft=False
                 )
@@ -100,7 +94,6 @@ class RaySSHTerminal:
         except Exception as e:
             if not self.is_remote_mode and self.target_node:
                 print(f"❌ Failed to place actor on target node {self.target_node['NodeManagerAddress']}: {e}")
-                print("   The node may be busy, out of resources, or have conflicting actors.")
                 return None
             else:
                 raise
@@ -163,8 +156,7 @@ class RaySSHTerminal:
             if self.target_node:
                 requested_ip = self.target_node["NodeManagerAddress"]
                 if connection_host != requested_ip:
-                    print(f"⚠️  WARNING: You requested {requested_ip} but actor was placed on {connection_host}")
-                    print(f"   This may happen if the target node is busy or unavailable.")
+                    print(f"⚠️  Connecting to {connection_host} instead of requested {requested_ip}")
 
             await self.client.connect_to_terminal(connection_host, server_info["port"])
 

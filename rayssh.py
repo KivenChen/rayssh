@@ -218,12 +218,12 @@ def main():
         terminal = RaySSHTerminal(
             None, ray_address=ray_address_env, working_dir=working_dir
         )
-    elif ray_address_env:
-        # Ray client mode without working directory - use RaySSHTerminal in remote mode
+    elif ray_address_env and node_arg is None:
+        # Ray client mode without working directory and no specific node - use RaySSHTerminal in remote mode
         terminal = RaySSHTerminal(None, ray_address=ray_address_env, working_dir=None)
     else:
-        # Cluster connection - connect to specific node
-        terminal = RaySSHTerminal(node_arg)
+        # Cluster connection - connect to specific node (even with RAY_ADDRESS set)
+        terminal = RaySSHTerminal(node_arg, ray_address=ray_address_env)
 
     try:
         asyncio.run(terminal.run())
