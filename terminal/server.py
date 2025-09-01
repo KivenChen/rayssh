@@ -12,11 +12,12 @@ import signal
 import subprocess
 import threading
 import time
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 
 import ray
 import websockets
 from websockets.server import serve
+import uuid
 
 from utils import detect_accessible_ip
 from .utils import (
@@ -44,6 +45,78 @@ class TerminalActor:
         self.port = None
         self.node_info = None
         self.working_dir = working_dir
+        self.session_id = None
+        # Map of session_id -> connection/session state
+        self.sessions: Dict[str, Dict[str, Any]] = {}
+        # Sessions are created lazily per client connection
+
+    def _ensure_session_entry(self, session_id: str) -> None:
+        if session_id not in self.sessions:
+            self.sessions[session_id] = {
+                "websocket": None,
+                "pty_master": None,
+                "pty_slave": None,
+                "shell_pid": None,
+                "shell_process": None,
+                "created_at": time.time(),
+                "tasks": {},
+            }
+
+    def close_session(self, session_id: str) -> None:
+        """Terminate and cleanup a specific session."""
+        sess = self.sessions.get(session_id)
+        if not sess:
+            return
+
+        # Cancel tasks
+        tasks = sess.get("tasks", {}) or {}
+        for t in list(tasks.values()):
+            try:
+                if t and not t.done():
+                    t.cancel()
+            except Exception:
+                pass
+        sess["tasks"] = {}
+
+        # Close WebSocket
+        ws = sess.get("websocket")
+        if ws:
+            try:
+                asyncio.create_task(ws.close())
+            except Exception:
+                pass
+        sess["websocket"] = None
+
+        # Terminate shell process
+        shell_process = sess.get("shell_process")
+        if shell_process:
+            try:
+                os.killpg(os.getpgid(shell_process.pid), signal.SIGTERM)
+                shell_process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(os.getpgid(shell_process.pid), signal.SIGKILL)
+                    shell_process.wait(timeout=1)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        sess["shell_process"] = None
+
+        # Close PTY master
+        if sess.get("pty_master"):
+            try:
+                os.close(sess["pty_master"])
+            except Exception:
+                pass
+        sess["pty_master"] = None
+        sess["pty_slave"] = None
+
+        # Remove session entry
+        try:
+            del self.sessions[session_id]
+        except Exception:
+            pass
 
     def get_node_info(self) -> Dict:
         """Get information about the current node."""
@@ -59,16 +132,34 @@ class TerminalActor:
     async def handle_client(self, websocket, path):
         """Handle a WebSocket client connection."""
         print(f"Terminal client connected from {websocket.remote_address}")
-        self.websocket = websocket
+        # Create a new session id for this connection
+        sid = uuid.uuid4().hex
+        self._ensure_session_entry(sid)
+        self.sessions[sid]["websocket"] = websocket
 
         try:
+            # Send initial hello with session_id
+            try:
+                ws = self.sessions.get(sid, {}).get("websocket")
+                if ws:
+                    await ws.send(
+                        json.dumps({
+                            "type": "hello",
+                            "session_id": sid,
+                        })
+                    )
+            except Exception:
+                pass
+
             # Start PTY if not already running
-            if not self.shell_process:
-                await self.start_pty()
+            if not self.sessions.get(sid, {}).get("shell_process"):
+                await self.start_pty(sid)
 
             # Create tasks for bidirectional communication
-            pty_to_ws_task = asyncio.create_task(self.pty_to_websocket())
-            ws_to_pty_task = asyncio.create_task(self.websocket_to_pty())
+            pty_to_ws_task = asyncio.create_task(self.pty_to_websocket(sid))
+            ws_to_pty_task = asyncio.create_task(self.websocket_to_pty(sid))
+            self.sessions[sid]["tasks"]["pty_to_ws"] = pty_to_ws_task
+            self.sessions[sid]["tasks"]["ws_to_pty"] = ws_to_pty_task
 
             # Wait for either task to complete (client disconnect or PTY exit)
             done, pending = await asyncio.wait(
@@ -84,18 +175,23 @@ class TerminalActor:
         except Exception as e:
             print(f"Error in terminal session: {e}")
         finally:
-            self.websocket = None
+            if sid in self.sessions:
+                # Ensure the session is fully closed
+                self.close_session(sid)
 
-    async def start_pty(self):
+    async def start_pty(self, session_id: str):
         """Start the PTY session with a shell."""
         # Create PTY
-        self.pty_master, self.pty_slave = pty.openpty()
+        pty_master, pty_slave = pty.openpty()
 
         # Configure PTY terminal settings for proper signal handling
-        if configure_pty_for_signals(self.pty_slave):
-            print("✓ PTY configured for normal mode with signal handling")
-        else:
-            print(f"Warning: Could not configure PTY attributes: {e}")
+        try:
+            if configure_pty_for_signals(pty_slave):
+                print("✓ PTY configured for normal mode with signal handling")
+            else:
+                print("Warning: Could not configure PTY attributes")
+        except Exception as e:
+            print(f"Warning: PTY configuration error: {e}")
 
         # Start shell process
         # If no working_dir specified, use HOME directory (remote's HOME)
@@ -105,13 +201,13 @@ class TerminalActor:
 
         def setup_child():
             """Set up the child process to properly handle signals."""
-            setup_controlling_terminal(self.pty_slave)
+            setup_controlling_terminal(pty_slave)
 
-        self.shell_process = subprocess.Popen(
+        shell_process = subprocess.Popen(
             [os.environ.get("SHELL", "/bin/bash")],
-            stdin=self.pty_slave,
-            stdout=self.pty_slave,
-            stderr=self.pty_slave,
+            stdin=pty_slave,
+            stdout=pty_slave,
+            stderr=pty_slave,
             preexec_fn=setup_child,
             env=(lambda e: (e.update({"TERM": e.get("TERM", "xterm-256color")})) or e)(
                 os.environ.copy()
@@ -120,46 +216,75 @@ class TerminalActor:
         )
 
         # Close slave fd in parent (shell process has it)
-        os.close(self.pty_slave)
+        os.close(pty_slave)
 
-        print(f"Started shell process {self.shell_process.pid}")
+        print(f"Started shell process {shell_process.pid}")
         if self.working_dir:
             print(f"Shell started in working directory: {self.working_dir}")
         else:
             print(f"Shell started in HOME directory: {shell_cwd}")
 
-    async def pty_to_websocket(self):
+        # Update session store
+        self._ensure_session_entry(session_id)
+        sess = self.sessions[session_id]
+        sess["pty_master"] = pty_master
+        sess["pty_slave"] = None  # closed in parent
+        sess["shell_process"] = shell_process
+        sess["shell_pid"] = shell_process.pid
+
+    async def pty_to_websocket(self, session_id: str):
         """Forward data from PTY to WebSocket."""
         loop = asyncio.get_event_loop()
 
-        while self.running and self.websocket:
+        while self.running:
             try:
                 # Use asyncio to read from PTY (non-blocking)
-                data = await loop.run_in_executor(None, self._read_pty)
+                data = await loop.run_in_executor(None, self._read_pty, session_id)
                 if data:
-                    # Send raw bytes to WebSocket client (binary frame)
-                    await self.websocket.send(data)
+                    # Send binary frame with small header carrying session_id
+                    # Header format: b'RSHT' + version(1 byte) + session_id(32 ascii hex)
+                    ws = self.sessions.get(session_id, {}).get("websocket")
+                    if not ws:
+                        # No connected websocket; stop forwarding
+                        break
+                    header = b"RSHT" + bytes([1]) + session_id.encode("ascii")
+                    await ws.send(header + data)
                 else:
-                    # PTY closed
+                    # PTY closed; cleanup session
+                    self.close_session(session_id)
                     break
             except Exception as e:
                 print(f"Error reading from PTY: {e}")
+                # Cleanup and exit this session loop
+                self.close_session(session_id)
                 break
 
-    def _read_pty(self):
+    def _read_pty(self, session_id: str):
         """Read data from PTY (blocking operation for executor)."""
         try:
-            return os.read(self.pty_master, 1024)
+            sess = self.sessions.get(session_id)
+            if not sess or not sess.get("pty_master"):
+                return None
+            return os.read(sess["pty_master"], 1024)
         except OSError:
             return None
 
-    async def websocket_to_pty(self):
+    async def websocket_to_pty(self, session_id: str):
         """Forward data from WebSocket to PTY."""
-        while self.running and self.websocket:
+        while self.running:
             try:
                 # Receive message from WebSocket
-                message = await self.websocket.recv()
+                ws = self.sessions.get(session_id, {}).get("websocket")
+                if not ws:
+                    break
+                message = await ws.recv()
                 data = json.loads(message)
+
+                # Validate session_id if present
+                sid = data.get("session_id")
+                if sid is not None and sid != session_id:
+                    # Ignore messages for a different session
+                    continue
 
                 if data.get("type") == "input":
                     # Write to PTY
@@ -167,35 +292,41 @@ class TerminalActor:
                     if isinstance(input_data, str):
                         # Handle Ctrl-C: first try to signal child processes, 
                         # if no children, let PTY handle it normally (for line editing)
-                        if ord(input_data) == 3 and self.shell_process:  # Ctrl-C
+                        sess = self.sessions.get(session_id)
+                        shell_process = sess.get("shell_process") if sess else None
+                        if ord(input_data) == 3 and shell_process:  # Ctrl-C
                             # Try to handle via child process signaling
-                            handled = handle_ctrl_c_signal(self.shell_process.pid)
+                            handled = handle_ctrl_c_signal(shell_process.pid)
                             if handled:
                                 # Signal was sent to children, don't pass Ctrl-C to PTY
                                 continue
 
                         # Preserve control characters (e.g., Ctrl-C = \x03, Ctrl-D = \x04)
-                        os.write(
-                            self.pty_master,
-                            input_data.encode("latin1", errors="ignore"),
-                        )
+                        sess = self.sessions.get(session_id)
+                        if not sess or not sess.get("pty_master"):
+                            continue
+                        os.write(sess["pty_master"], input_data.encode("latin1", errors="ignore"))
                     else:
-                        os.write(self.pty_master, bytes(input_data))
+                        sess = self.sessions.get(session_id)
+                        if not sess or not sess.get("pty_master"):
+                            continue
+                        os.write(sess["pty_master"], bytes(input_data))
                 elif data.get("type") == "resize":
                     # Handle terminal resize
                     rows = data.get("rows", 24)
                     cols = data.get("cols", 80)
-                    self._resize_pty(rows, cols)
+                    self._resize_pty(session_id, rows, cols)
 
             except websockets.exceptions.ConnectionClosed:
-                # Client disconnected; stop running to allow cleanup
-                self.running = False
+                # Client disconnected; cleanup this session only
+                self.close_session(session_id)
                 break
             except Exception as e:
                 print(f"Error processing WebSocket message: {e}")
+                self.close_session(session_id)
                 break
 
-    def _resize_pty(self, rows: int, cols: int):
+    def _resize_pty(self, session_id: str, rows: int, cols: int):
         """Resize the PTY."""
         try:
             import struct
@@ -204,11 +335,16 @@ class TerminalActor:
 
             # Set terminal size
             winsize = struct.pack("HHHH", rows, cols, 0, 0)
-            fcntl.ioctl(self.pty_master, termios.TIOCSWINSZ, winsize)
+            sess = self.sessions.get(session_id)
+            if not sess or not sess.get("pty_master"):
+                return
+            fcntl.ioctl(sess["pty_master"], termios.TIOCSWINSZ, winsize)
 
             # Send SIGWINCH to shell process
-            if self.shell_process:
-                os.killpg(os.getpgid(self.shell_process.pid), signal.SIGWINCH)
+            sess = self.sessions.get(session_id)
+            shell_process = sess.get("shell_process") if sess else None
+            if shell_process:
+                os.killpg(os.getpgid(shell_process.pid), signal.SIGWINCH)
 
         except Exception as e:
             print(f"Error resizing PTY: {e}")
@@ -258,40 +394,12 @@ class TerminalActor:
             except Exception as e:
                 print(f"Warning: Error closing WebSocket server: {e}")
 
-        # Close WebSocket connection if active
-        if self.websocket:
+        # Close all active sessions
+        for sid in list(self.sessions.keys()):
             try:
-                asyncio.create_task(self.websocket.close())
-                print("✓ WebSocket connection closed")
+                self.close_session(sid)
             except Exception as e:
-                print(f"Warning: Error closing WebSocket connection: {e}")
-
-        # Clean up shell process gracefully
-        if self.shell_process:
-            try:
-                print("Terminating shell process...")
-                # Send SIGTERM first for graceful shutdown
-                os.killpg(os.getpgid(self.shell_process.pid), signal.SIGTERM)
-                self.shell_process.wait(timeout=5)
-                print("✓ Shell process terminated gracefully")
-            except subprocess.TimeoutExpired:
-                print("Shell process didn't terminate, forcing kill...")
-                try:
-                    os.killpg(os.getpgid(self.shell_process.pid), signal.SIGKILL)
-                    self.shell_process.wait(timeout=2)
-                    print("✓ Shell process killed")
-                except Exception as e:
-                    print(f"Warning: Error killing shell process: {e}")
-            except Exception as e:
-                print(f"Warning: Error terminating shell process: {e}")
-
-        # Clean up PTY
-        if self.pty_master:
-            try:
-                os.close(self.pty_master)
-                print("✓ PTY closed")
-            except Exception as e:
-                print(f"Warning: Error closing PTY: {e}")
+                print(f"Warning: Error closing session {sid}: {e}")
 
     def get_server_info(self) -> Dict:
         """Get server connection information."""
