@@ -347,6 +347,36 @@ def handle_code_command(argv: List[str]) -> int:
             # No explicit IP; treat first token as potential path
             code_path = non_flags[0]
 
+    # Initialize Ray first
+    ray_address_env = os.environ.get("RAY_ADDRESS")
+    try:
+        if ray_address_env:
+            # Only upload working_dir if user explicitly specified a path
+            if code_path:
+                ensure_ray_initialized(
+                    ray_address=ray_address_env, working_dir=code_path
+                )
+            else:
+                ensure_ray_initialized(ray_address=ray_address_env, working_dir=None)
+        else:
+            if code_path:
+                print(
+                    "Warning: [path] is only used in Ray Client mode (RAY_ADDRESS). Ignoring path."
+                )
+            ensure_ray_initialized()
+
+    except Exception as e:
+        msg = str(e)
+        if "Version mismatch" in msg and "Python" in msg:
+            print(
+                "❌ Ray/Python version mismatch between this process and the running cluster.",
+                file=sys.stderr,
+            )
+        else:
+            print(f"Error initializing Ray: {e}", file=sys.stderr)
+        return 1
+
+    # Now select the target node (after Ray is initialized)
     try:
         worker_node_id = None
         # Highest priority: explicit IP from CLI
@@ -376,41 +406,6 @@ def handle_code_command(argv: List[str]) -> int:
     n_gpus = parse_n_gpus_from_env()
     if n_gpus is not None:
         print(f"🎛️ GPUs requested: {n_gpus}")
-
-    ray_address_env = os.environ.get("RAY_ADDRESS")
-    try:
-        if ray_address_env:
-            # Only upload working_dir if user explicitly specified a path
-            if code_path:
-                ensure_ray_initialized(
-                    ray_address=ray_address_env, working_dir=code_path
-                )
-            else:
-                ensure_ray_initialized(ray_address=ray_address_env, working_dir=None)
-        else:
-            if code_path:
-                print(
-                    "Warning: [path] is only used in remote mode (RAY_ADDRESS). Ignoring path."
-                )
-            # Already initialized above; no need to init again
-    except Exception as e:
-        msg = str(e)
-        if "Version mismatch" in msg and "Python" in msg:
-            print(
-                "❌ Ray/Python version mismatch between this process and the running local cluster.",
-                file=sys.stderr,
-            )
-            print(
-                "   Fix: either (1) run 'rayssh' from the same Python env that started the cluster,",
-                file=sys.stderr,
-            )
-            print(
-                "        or (2) restart the local cluster from this env: 'ray stop' then 'ray start --head'",
-                file=sys.stderr,
-            )
-        else:
-            print(f"Error initializing Ray: {e}", file=sys.stderr)
-        return 1
 
     # Singleton CodeServerActor per node, include node IP in name
     try:

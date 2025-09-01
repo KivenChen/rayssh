@@ -82,7 +82,35 @@ def handle_lab_command(argv: List[str]) -> int:
         else:
             lab_path = a
 
-    # Placement - prefer last session IP if available
+    # Initialize Ray first
+    ray_address_env = os.environ.get("RAY_ADDRESS")
+    try:
+        if ray_address_env:
+            # Only upload working_dir if user explicitly specified a path
+            if lab_path:
+                ensure_ray_initialized(
+                    ray_address=ray_address_env, working_dir=lab_path
+                )
+            else:
+                ensure_ray_initialized(ray_address=ray_address_env, working_dir=None)
+        else:
+            if lab_path:
+                print(
+                    "Warning: [path] is only used in Ray Client mode (RAY_ADDRESS). Ignoring path."
+                )
+            ensure_ray_initialized()
+    except Exception as e:
+        msg = str(e)
+        if "Version mismatch" in msg and "Python" in msg:
+            print(
+                "❌ Ray/Python version mismatch between this process and the running cluster.",
+                file=sys.stderr,
+            )
+        else:
+            print(f"Error initializing Ray: {e}", file=sys.stderr)
+        return 1
+
+    # Placement - prefer last session IP if available (after Ray is initialized)
     try:
         prefer_ip = load_last_session_preferred_ip()
         worker_node_id = None
@@ -100,42 +128,6 @@ def handle_lab_command(argv: List[str]) -> int:
     n_gpus = parse_n_gpus_from_env()
     if n_gpus is not None:
         print(f"🎛️ GPUs requested: {n_gpus}")
-
-    # Initialize Ray (may already be initialized by state API, but ensure proper configuration)
-    ray_address_env = os.environ.get("RAY_ADDRESS")
-    try:
-        if ray_address_env:
-            # Only upload working_dir if user explicitly specified a path
-            if lab_path:
-                ensure_ray_initialized(
-                    ray_address=ray_address_env, working_dir=lab_path
-                )
-            else:
-                ensure_ray_initialized(ray_address=ray_address_env, working_dir=None)
-        else:
-            if lab_path:
-                print(
-                    "Warning: [path] is only used in remote mode (RAY_ADDRESS). Ignoring path."
-                )
-            # Already initialized above; no need to init again
-    except Exception as e:
-        msg = str(e)
-        if "Version mismatch" in msg and "Python" in msg:
-            print(
-                "❌ Ray/Python version mismatch between this process and the running local cluster.",
-                file=sys.stderr,
-            )
-            print(
-                "   Fix: either (1) run 'rayssh' from the same Python env that started the cluster,",
-                file=sys.stderr,
-            )
-            print(
-                "        or (2) restart the local cluster from this env: 'ray stop' then 'ray start --head'",
-                file=sys.stderr,
-            )
-        else:
-            print(f"Error initializing Ray: {e}", file=sys.stderr)
-        return 1
 
     # Singleton LabActor per node, include node IP in the name
     try:
