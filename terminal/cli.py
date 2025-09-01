@@ -6,11 +6,18 @@ RaySSH terminal CLI interface.
 import sys
 import signal
 import asyncio
+import time
 import ray
 
 from .server import TerminalActor
 from .ws_client import TerminalClient
-from utils import ensure_ray_initialized, find_target_node, parse_n_gpus_from_env
+from utils import (
+    ensure_ray_initialized,
+    find_target_node,
+    parse_n_gpus_from_env,
+    write_last_session_node_ip,
+    select_worker_node,
+)
 
 
 class RaySSHTerminal:
@@ -42,17 +49,22 @@ class RaySSHTerminal:
 
     def initialize_ray(self):
         """Initialize Ray connection."""
-        if self.is_remote_mode:
-            ensure_ray_initialized(
-                ray_address=self.ray_address, working_dir=self.working_dir
-            )
-            # For remote mode, we don't need to find a specific target node
-            # The terminal actor will be deployed remotely
-            self.target_node = {"NodeManagerAddress": "remote", "NodeName": "remote"}
-        else:
-            ensure_ray_initialized()
+        # Always use RAY_ADDRESS if set to ensure proper module shipping
+        ensure_ray_initialized(
+            ray_address=self.ray_address,
+            working_dir=self.working_dir if self.is_remote_mode else None,
+        )
 
-            # Find target node for cluster connection
+        if self.is_remote_mode:
+            # Ray Client mode: select a worker node ourselves instead of using SPREAD
+            n_gpus = parse_n_gpus_from_env()
+            try:
+                self.target_node = select_worker_node(n_gpus=n_gpus)
+            except RuntimeError as e:
+                print(f"❌ {e}")
+                sys.exit(1)
+        else:
+            # Cluster connection: find the specific target node
             self.target_node = find_target_node(self.node_arg)
             if not self.target_node:
                 print(f"Could not find target node: {self.node_arg}")
@@ -60,8 +72,6 @@ class RaySSHTerminal:
 
     def start_terminal_actor(self):
         """Start the terminal actor on target node."""
-        print("🌐 Deploying terminal actor...")
-
         # Parse GPU requirements from environment
         n_gpus = parse_n_gpus_from_env()
         if n_gpus is not None:
@@ -70,69 +80,90 @@ class RaySSHTerminal:
         else:
             actor_options = {}
 
-        # Configure scheduling strategy based on mode and target node
-        if self.is_remote_mode:
-            # Ray Client mode: use SPREAD scheduling (head has 0 CPUs)
-            actor_options["scheduling_strategy"] = "SPREAD"
-        else:
-            # Cluster connection: if user specified a target node, place actor there specifically
-            if self.target_node and self.target_node.get("NodeID"):
-                target_node_id = self.target_node["NodeID"]
-                actor_options["scheduling_strategy"] = ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
-                    node_id=target_node_id, soft=False
-                )
-            else:
-                # No specific target, use SPREAD
-                actor_options["scheduling_strategy"] = "SPREAD"
+        # We always have a specific target node now, so always use NodeAffinitySchedulingStrategy
+        if not self.target_node or not self.target_node.get("NodeID"):
+            print("❌ No target node available for actor placement")
+            return None
 
-        # Create terminal actor (name includes node IP when in cluster mode)
+        target_node_id = self.target_node["NodeID"]
+        target_ip = self.target_node["NodeManagerAddress"]
+
+        actor_options["scheduling_strategy"] = (
+            ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
+                node_id=target_node_id, soft=False
+            )
+        )
+
+        # Use one persistent actor per node to share port 8080
+        safe_ip = str(target_ip).replace(".", "-")
+        actor_name = f"rayssh_terminal_{safe_ip}"
+
+        # Try to connect to existing server first (avoid ray.get() calls)
         try:
-            if not self.is_remote_mode:
-                target_ip = None
-                try:
-                    target_ip = self.target_node.get("NodeManagerAddress") if self.target_node else None
-                except Exception:
-                    target_ip = None
-                if target_ip:
-                    safe_ip = str(target_ip).replace(".", "-")
-                    actor_options["name"] = f"rayssh_terminal_{safe_ip}"
-                    actor_options["namespace"] = "rayssh"
-            if self.working_dir:
-                self.terminal_actor = TerminalActor.options(**actor_options).remote(working_dir=self.working_dir)
-            else:
-                self.terminal_actor = TerminalActor.options(**actor_options).remote()
-        except Exception as e:
-            if not self.is_remote_mode and self.target_node:
-                print(f"❌ Failed to place actor on target node {self.target_node['NodeManagerAddress']}: {e}")
-                return None
-            else:
-                raise
+            existing_actor = ray.get_actor(actor_name, namespace="rayssh")
+            # Test if server is running by trying to connect to port 8080
+            import socket
 
-        # Start the terminal server (interruptible wait)
-        start_ref = self.terminal_actor.start_terminal_server.remote()
-        while True:
-            if self.shutdown_requested:
-                print("🛑 Deployment interrupted. Cleaning up...")
-                try:
-                    ray.get(
-                        self.terminal_actor.stop_terminal_server.remote(), timeout=5.0
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2)
+
+            try:
+                result = sock.connect_ex((target_ip, 8080))
+                if result == 0:
+                    sock.close()
+                    # Server is running, we can connect to it
+                    self.terminal_actor = existing_actor
+                    return {"ip": target_ip, "port": 8080}
+                else:
+                    sock.close()
+                    # Server not running, try to start it
+                    self.terminal_actor = existing_actor
+            except Exception:
+                sock.close()
+                # Server not running, try to start it
+                self.terminal_actor = existing_actor
+
+        except Exception:
+            # No existing actor, create new one
+            try:
+                actor_options.update(
+                    {"name": actor_name, "lifetime": "detached", "namespace": "rayssh"}
+                )
+
+                if self.working_dir:
+                    self.terminal_actor = TerminalActor.options(**actor_options).remote(
+                        working_dir=self.working_dir
                     )
-                except Exception:
-                    pass
+                else:
+                    self.terminal_actor = TerminalActor.options(
+                        **actor_options
+                    ).remote()
+
+            except Exception as e:
+                print(f"❌ Failed to place actor on target node {target_ip}: {e}")
+                return None
+
+        # Start the terminal server (single call with timeout)
+        try:
+            server_info = ray.get(
+                self.terminal_actor.start_terminal_server.remote(), timeout=5.0
+            )
+
+            if server_info:
+                return server_info
+            else:
+                return None
+
+        except Exception as e:
+            if self.shutdown_requested:
                 try:
                     ray.kill(self.terminal_actor)
                 except Exception:
                     pass
                 return None
-            try:
-                return ray.get(start_ref, timeout=1.0)
-            except Exception as e:
-                # Continue polling on timeout; re-raise other errors
-                from ray.exceptions import GetTimeoutError
-
-                if isinstance(e, GetTimeoutError):
-                    continue
-                raise
+            else:
+                print(f"Server startup error: {e}")
+                return None
 
     async def run(self):
         """Run the terminal session."""
@@ -149,7 +180,7 @@ class RaySSHTerminal:
             server_info = self.start_terminal_actor()
 
             if not server_info:
-                print("Cancelled starting terminal server")
+                print("Failed to start terminal server")
                 return
 
             # Check for shutdown request
@@ -161,14 +192,19 @@ class RaySSHTerminal:
             self.client = TerminalClient()
             # Always use the actual IP from server_info (where the actor is actually running)
             connection_host = server_info["ip"]
-            
-            # Check for IP mismatch and warn user BEFORE connecting
+
+            # Check for IP mismatch and warn user
             if self.target_node:
                 requested_ip = self.target_node["NodeManagerAddress"]
                 if connection_host != requested_ip:
-                    print(f"⚠️  Connecting to {connection_host} instead of requested {requested_ip}")
+                    print(
+                        f"⚠️  Connecting to {connection_host} instead of requested {requested_ip}"
+                    )
 
             await self.client.connect_to_terminal(connection_host, server_info["port"])
+
+            # Save the successfully connected IP as last session
+            write_last_session_node_ip(connection_host)
 
         except KeyboardInterrupt:
             print("\nKeyboard interrupt received, shutting down gracefully...")
@@ -193,13 +229,8 @@ class RaySSHTerminal:
             except Exception as e:
                 print(f"Warning: Error closing client: {e}")
 
-        # Stop terminal server
+        # Keep the server running for future connections (don't stop it)
         if self.terminal_actor:
-            try:
-                ray.get(self.terminal_actor.stop_terminal_server.remote())
-                print("✓ Terminal server stopped")
-            except Exception as e:
-                print(f"Warning: Error stopping server: {e}")
+            print("✓ Session ended (server remains active)")
 
-        # Print final cleanup message on a clean line
         print("Press Enter to confirm exit...")

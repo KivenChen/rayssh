@@ -24,7 +24,13 @@ from cli import (
     handle_lab_command,
     handle_code_command,
 )
-from utils import ensure_ray_initialized, find_node_by_ip
+from utils import (
+    ensure_ray_initialized,
+    load_last_session_preferred_ip,
+    find_node_by_ip,
+    select_worker_node,
+    parse_n_gpus_from_env,
+)
 
 
 def signal_handler(signum, frame):
@@ -52,27 +58,22 @@ def main():
             try:
                 ensure_ray_initialized()
                 # Try previous session first
-                last_path = os.path.expanduser("~/.rayssh/last_session.json")
-                prefer_ip = None
-                try:
-                    if os.path.isfile(last_path):
-                        with open(last_path, "r", encoding="utf-8") as f:
-                            data = json.load(f)
-                            prefer_ip = data.get("node_ip")
-                    if prefer_ip:
+                prefer_ip = load_last_session_preferred_ip()
+                if prefer_ip:
+                    try:
                         node_info = find_node_by_ip(prefer_ip)
                         if node_info and node_info.get("Alive"):
                             node_arg = prefer_ip
-                            print(f"🔁 Reconnecting to previous node: {node_arg}")
-        else:
+                        else:
                             prefer_ip = None
-                except Exception:
-                    prefer_ip = None
+                    except Exception:
+                        prefer_ip = None
 
-                if not node_arg:
-                    selected_node = get_random_worker_node()
+                if not prefer_ip:
+                    # Use our custom node selection logic
+                    n_gpus = parse_n_gpus_from_env()
+                    selected_node = select_worker_node(n_gpus=n_gpus)
                     node_arg = selected_node.get("NodeManagerAddress")
-                    print(f"🎲 Connecting to worker node: {node_arg}")
             except ValueError as e:
                 print(f"Error: {e}")
                 return 1
@@ -139,16 +140,16 @@ def main():
                 # Use the node's IP address as the connection target
                 node_arg = node.get("NodeManagerAddress")
                 print(f"🔗 Connecting to node -{index}: {node_arg}")
-        except ValueError as e:
-            print(f"Error: {e}", file=sys.stderr)
+            except ValueError as e:
+                print(f"Error: {e}", file=sys.stderr)
                 print("Use 'rayssh --ls' to see available nodes", file=sys.stderr)
                 return 1
-        except Exception as e:
+            except Exception as e:
                 print(f"Error getting node by index: {e}", file=sys.stderr)
                 return 1
 
         # Otherwise, treat as node argument
-                else:
+        else:
             node_arg = argument
 
     elif len(sys.argv) == 3:
@@ -161,7 +162,7 @@ def main():
                 and "." in potential_file
             ):
                 return submit_file_job(potential_file, no_wait=True)
-                else:
+            else:
                 print(
                     f"Error: File '{potential_file}' not found or not a valid file",
                     file=sys.stderr,
@@ -176,6 +177,7 @@ def main():
         # Handle -- <command>
         elif sys.argv[1] == "--":
             import shlex
+
             return submit_shell_command(shlex.join(sys.argv[2:]))
 
         # Handle -0 lab and -0 code patterns
@@ -184,7 +186,7 @@ def main():
                 return handle_lab_command(["-0", "lab"] + sys.argv[3:])
             elif sys.argv[2] == "code":
                 return handle_code_command(["-0", "code"] + sys.argv[3:])
-                            else:
+            else:
                 # Fall through to node index handling
                 pass
 
@@ -197,16 +199,17 @@ def main():
         elif sys.argv[1] == "--":
             # Join the rest as a properly quoted command string
             import shlex
+
             return submit_shell_command(shlex.join(sys.argv[2:]))
         elif sys.argv[1] == "-0" and len(sys.argv) >= 4:
             if sys.argv[2] == "lab":
                 return handle_lab_command(["-0", "lab"] + sys.argv[3:])
             elif sys.argv[2] == "code":
                 return handle_code_command(["-0", "code"] + sys.argv[3:])
-                else:
+            else:
                 print_help()
                 return 1
-            else:
+        else:
             # More than 2 arguments - for now, just show help
             print_help()
             return 1
@@ -242,7 +245,7 @@ def main():
     elif ray_address_env and node_arg is None:
         # Ray client mode without working directory and no specific node - use RaySSHTerminal in remote mode
         terminal = RaySSHTerminal(None, ray_address=ray_address_env, working_dir=None)
-                        else:
+    else:
         # Cluster connection - connect to specific node (even with RAY_ADDRESS set)
         terminal = RaySSHTerminal(node_arg, ray_address=ray_address_env)
 
@@ -251,20 +254,23 @@ def main():
         if node_arg and not ray_address_env:
             os.makedirs(os.path.expanduser("~/.rayssh"), exist_ok=True)
             last_path = os.path.expanduser("~/.rayssh/last_session.json")
-            payload = {"node_ip": node_arg, "timestamp": datetime.now().isoformat(timespec="seconds")}
+            payload = {
+                "node_ip": node_arg,
+                "timestamp": datetime.now().isoformat(timespec="seconds"),
+            }
             with open(last_path, "w", encoding="utf-8") as f:
                 json.dump(payload, f)
-                except Exception:
-                    pass
+    except Exception:
+        pass
 
     try:
         asyncio.run(terminal.run())
-        except KeyboardInterrupt:
+    except KeyboardInterrupt:
         print("\nSession interrupted by user.")
-        except Exception as e:
+    except Exception as e:
         print(f"Fatal error: {e}")
         sys.exit(1)
-        finally:
+    finally:
         print("👋 Goodbye!")
 
 

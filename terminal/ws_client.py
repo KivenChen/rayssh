@@ -44,10 +44,14 @@ class TerminalClient:
                 hello = await asyncio.wait_for(self.websocket.recv(), timeout=2.0)
                 try:
                     hello_data = json.loads(hello)
-                    if isinstance(hello_data, dict) and hello_data.get("type") == "hello":
+                    if (
+                        isinstance(hello_data, dict)
+                        and hello_data.get("type") == "hello"
+                    ):
                         self.session_id = hello_data.get("session_id")
                         if self.session_id:
-                            print(f"🔑 Session ID: {self.session_id}")
+                            # print(f"🔑 Session ID: {self.session_id}")
+                            pass
                 except Exception:
                     pass
             except Exception:
@@ -198,7 +202,11 @@ class TerminalClient:
                             sid_str = None
                         if self.session_id is None:
                             self.session_id = sid_str
-                        if self.session_id is not None and sid_str is not None and sid_str != self.session_id:
+                        if (
+                            self.session_id is not None
+                            and sid_str is not None
+                            and sid_str != self.session_id
+                        ):
                             continue
                         payload = buf[37:]
                     else:

@@ -14,7 +14,7 @@ import ray
 
 def parse_n_gpus_from_env() -> Optional[float]:
     """Parse n_gpus from environment variables (supports 'n_gpus' or 'N_GPUS').
-    
+
     Returns:
         GPU count as float, or None if not specified or invalid
     """
@@ -28,6 +28,83 @@ def parse_n_gpus_from_env() -> Optional[float]:
         except Exception:
             return None
     return None
+
+
+def select_worker_node(
+    n_gpus: Optional[float] = None, prefer_ip: Optional[str] = None
+) -> Dict:
+    """Select an appropriate worker node for actor placement.
+
+    Args:
+        n_gpus: Number of GPUs required (None for no GPU requirement)
+        prefer_ip: Preferred node IP (will be used if available and suitable)
+
+    Returns:
+        Selected node dict with NodeID, NodeManagerAddress, etc.
+
+    Raises:
+        RuntimeError: If no suitable worker nodes are available
+    """
+    # Ensure Ray is initialized to get cluster state
+    if not ray.is_initialized():
+        raise RuntimeError("Ray must be initialized before selecting nodes")
+
+    nodes, head_node_id = fetch_cluster_nodes()
+    if not nodes:
+        raise RuntimeError("No alive Ray nodes found in the cluster")
+
+    # Filter to worker nodes only (exclude head node)
+    worker_nodes = []
+    for node in nodes:
+        node_id = node.get("NodeID")
+        if not node_id or node_id == head_node_id:
+            continue
+        if not node.get("Alive", False):
+            continue
+        worker_nodes.append(node)
+
+    if not worker_nodes:
+        raise RuntimeError("No worker nodes available")
+
+    # If user prefers a specific IP, check if it's available and suitable
+    if prefer_ip:
+        for node in worker_nodes:
+            if node.get("NodeManagerAddress") == prefer_ip:
+                # Check if node has sufficient GPU resources
+                if n_gpus is not None:
+                    available_gpus = node.get("Resources", {}).get("GPU", 0)
+                    if available_gpus < n_gpus:
+                        print(
+                            f"⚠️  Preferred node {prefer_ip} has insufficient GPUs ({available_gpus} < {n_gpus})"
+                        )
+                        break
+                # Preferred node is suitable
+                return node
+
+    # Filter nodes by GPU requirements if specified
+    if n_gpus is not None and n_gpus > 0:
+        suitable_nodes = []
+        for node in worker_nodes:
+            available_gpus = node.get("Resources", {}).get("GPU", 0)
+            if available_gpus >= n_gpus:
+                suitable_nodes.append(node)
+
+        if not suitable_nodes:
+            raise RuntimeError(f"No worker nodes have sufficient GPUs (need {n_gpus})")
+
+        worker_nodes = suitable_nodes
+
+    # Select node with most available resources (simple heuristic)
+    def node_score(node):
+        resources = node.get("Resources", {})
+        cpu = resources.get("CPU", 0)
+        memory = resources.get("memory", 0)
+        gpu = resources.get("GPU", 0)
+        # Simple scoring: prioritize nodes with more total resources
+        return cpu + memory / (1024**3) + gpu * 10  # Weight GPUs higher
+
+    selected_node = max(worker_nodes, key=node_score)
+    return selected_node
 
 
 def is_valid_ip(ip_str: str) -> bool:
@@ -246,12 +323,13 @@ def ensure_ray_initialized(
                 print(f"Error importing modules: {e}")
                 pass
 
-            try:
-                print(
-                    f"🧪 Starting local Ray cluster (cwd as working dir): {os.getcwd()}"
-                )
-            except Exception:
-                print("🧪 Starting local Ray cluster")
+            # try:
+            #     print(
+            #         f"🧪 Starting local Ray cluster (cwd as working dir): {os.getcwd()}"
+            #     )
+            # except Exception:
+            #     print("🧪 Starting local Ray cluster")
+            print(f"🌐 Connecting to Ray cluster")
             ray.init(
                 runtime_env=local_runtime_env,
                 logging_level="FATAL",  # Only show fatal errors
@@ -520,6 +598,7 @@ def filter_raylet_warnings(text: str) -> str:
 
 
 # ============ Last session preference helpers ============
+
 
 def _last_session_path() -> str:
     return os.path.expanduser("~/.rayssh/last_session.json")

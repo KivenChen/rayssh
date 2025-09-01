@@ -119,7 +119,9 @@ def submit_file_job(file_path: str, no_wait: bool = False) -> int:
         # Build Ray job submit command
         # Default submission id: {username}_{yymmddHHMMSS}
         try:
-            username = os.environ.get("USER") or os.environ.get("LOGNAME") or getpass.getuser()
+            username = (
+                os.environ.get("USER") or os.environ.get("LOGNAME") or getpass.getuser()
+            )
         except Exception:
             username = "rayuser"
         ts = datetime.datetime.now().strftime("%y%m%d%H%M%S")

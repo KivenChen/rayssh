@@ -338,6 +338,7 @@ def handle_code_command(argv: List[str]) -> int:
     if non_flags:
         # If the first non-flag looks like an IP, treat it as target IP
         from utils import is_valid_ip as _is_ip
+
         if _is_ip(non_flags[0]):
             explicit_ip = non_flags[0]
             if len(non_flags) >= 2:
@@ -352,7 +353,9 @@ def handle_code_command(argv: List[str]) -> int:
         if explicit_ip:
             node = find_node_by_ip(explicit_ip)
             if not node or not node.get("Alive"):
-                print(f"❌ Specified IP not found/alive: {explicit_ip}", file=sys.stderr)
+                print(
+                    f"❌ Specified IP not found/alive: {explicit_ip}", file=sys.stderr
+                )
                 return 1
             worker_node_id = node.get("NodeID")
         else:
