@@ -4,6 +4,8 @@ Job submission utilities for RaySSH CLI.
 """
 
 import os
+import getpass
+import datetime
 import shlex
 import subprocess
 import sys
@@ -115,11 +117,21 @@ def submit_file_job(file_path: str, no_wait: bool = False) -> int:
                 return 1
 
         # Build Ray job submit command
+        # Default submission id: {username}_{yymmddHHMMSS}
+        try:
+            username = (
+                os.environ.get("USER") or os.environ.get("LOGNAME") or getpass.getuser()
+            )
+        except Exception:
+            username = "rayuser"
+        ts = datetime.datetime.now().strftime("%y%m%d%H%M%S")
+        submission_id = f"{username}_{ts}"
         cmd = [
             "ray",
             "job",
             "submit",
             "--entrypoint-num-cpus=1",
+            f"--submission-id={submission_id}",
             working_dir_opt,
         ]
 
@@ -150,6 +162,7 @@ def submit_file_job(file_path: str, no_wait: bool = False) -> int:
             print(f"🎛️ GPUs: {gpu_str}")
         print(f"📋 Command: {' '.join(cmd)}")
         print("⚠️  Experimental feature - file execution via Ray job submission")
+        print(f"🆔 Submission ID: {submission_id}")
         print()
 
         # Execute the ray job submit command

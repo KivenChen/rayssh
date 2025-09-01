@@ -27,6 +27,7 @@ class TerminalClient:
         self._resize_task = None
         self._last_rows = None
         self._last_cols = None
+        self.session_id = None
 
     async def connect_to_terminal(self, host: str, port: int):
         """Connect to the terminal server and start interactive session."""
@@ -37,6 +38,24 @@ class TerminalClient:
             # Connect to WebSocket
             self.websocket = await websockets.connect(uri)
             print("✅ Connected! Terminal session started.")
+
+            # Expect an initial hello containing session_id
+            try:
+                hello = await asyncio.wait_for(self.websocket.recv(), timeout=2.0)
+                try:
+                    hello_data = json.loads(hello)
+                    if (
+                        isinstance(hello_data, dict)
+                        and hello_data.get("type") == "hello"
+                    ):
+                        self.session_id = hello_data.get("session_id")
+                        if self.session_id:
+                            # print(f"🔑 Session ID: {self.session_id}")
+                            pass
+                except Exception:
+                    pass
+            except Exception:
+                pass
 
             # Set terminal to raw mode
             self.setup_terminal()
@@ -114,10 +133,11 @@ class TerminalClient:
     async def _send_current_winsize(self):
         rows, cols = self._get_winsize()
         self._last_rows, self._last_cols = rows, cols
+        payload = {"type": "resize", "rows": rows, "cols": cols}
+        if self.session_id:
+            payload["session_id"] = self.session_id
         try:
-            await self.websocket.send(
-                json.dumps({"type": "resize", "rows": rows, "cols": cols})
-            )
+            await self.websocket.send(json.dumps(payload))
         except Exception:
             pass
 
@@ -128,10 +148,11 @@ class TerminalClient:
                 rows, cols = self._get_winsize()
                 if rows != self._last_rows or cols != self._last_cols:
                     self._last_rows, self._last_cols = rows, cols
+                    payload = {"type": "resize", "rows": rows, "cols": cols}
+                    if self.session_id:
+                        payload["session_id"] = self.session_id
                     try:
-                        await self.websocket.send(
-                            json.dumps({"type": "resize", "rows": rows, "cols": cols})
-                        )
+                        await self.websocket.send(json.dumps(payload))
                     except Exception:
                         break
                 await asyncio.sleep(0.3)
@@ -150,9 +171,10 @@ class TerminalClient:
                 char = await loop.run_in_executor(None, sys.stdin.read, 1)
                 if char:
                     # Send to terminal (including control chars like \x03 for Ctrl-C)
-                    await self.websocket.send(
-                        json.dumps({"type": "input", "data": char})
-                    )
+                    payload = {"type": "input", "data": char}
+                    if self.session_id:
+                        payload["session_id"] = self.session_id
+                    await self.websocket.send(json.dumps(payload))
                 else:
                     # EOF on stdin (Ctrl-D). Do not close the session; stop reading input
                     # and let the server/output dictate when to close.
@@ -169,22 +191,40 @@ class TerminalClient:
             try:
                 message = await self.websocket.recv()
 
-                # If message is bytes, write raw to stdout
-                if isinstance(message, bytes):
+                # Support binary frames with RSHT header carrying session_id
+                if isinstance(message, (bytes, bytearray)):
+                    buf = bytes(message)
+                    if len(buf) >= 37 and buf[:4] == b"RSHT" and buf[4] == 1:
+                        sid_bytes = buf[5:37]
+                        try:
+                            sid_str = sid_bytes.decode("ascii")
+                        except Exception:
+                            sid_str = None
+                        if self.session_id is None:
+                            self.session_id = sid_str
+                        if (
+                            self.session_id is not None
+                            and sid_str is not None
+                            and sid_str != self.session_id
+                        ):
+                            continue
+                        payload = buf[37:]
+                    else:
+                        # No header; treat entire payload as PTY bytes
+                        payload = buf
                     try:
-                        os.write(sys.stdout.fileno(), message)
+                        os.write(sys.stdout.fileno(), payload)
                     except Exception:
-                        # Fallback to text write if direct write fails
-                        sys.stdout.buffer.write(message)
+                        sys.stdout.buffer.write(payload)
                         sys.stdout.flush()
                     continue
 
-                # Otherwise treat as JSON control message
+                # JSON control messages (e.g., hello)
                 data = json.loads(message)
-                if data.get("type") == "output":
-                    payload = data.get("data", "")
-                    sys.stdout.write(payload)
-                    sys.stdout.flush()
+                if data.get("type") == "hello" and not self.session_id:
+                    sid = data.get("session_id")
+                    if isinstance(sid, str):
+                        self.session_id = sid
 
             except websockets.exceptions.ConnectionClosed:
                 # Signal shutdown and exit loop; cleanup will restore terminal

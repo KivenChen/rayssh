@@ -20,6 +20,9 @@ from utils import (
     fetch_cluster_nodes,
     get_head_node_id,
     parse_n_gpus_from_env,
+    load_last_session_preferred_ip,
+    find_node_by_ip,
+    write_last_session_node_ip,
 )
 
 
@@ -323,24 +326,28 @@ def handle_code_command(argv: List[str]) -> int:
         args = argv[1:]
 
     quick = False
+    explicit_ip: Optional[str] = None
     code_path: Optional[str] = None
+    # Extract non-flag tokens (order-preserving); prefer first as IP if it looks like one
+    non_flags: list[str] = []
     for a in args:
         if a == "-q":
             quick = True
         else:
-            code_path = a
+            non_flags.append(a)
+    if non_flags:
+        # If the first non-flag looks like an IP, treat it as target IP
+        from utils import is_valid_ip as _is_ip
 
-    try:
-        worker_node_id = _select_worker_node_id(allow_head_if_no_worker)
-    except Exception as e:
-        print(f"Error selecting node: {e}", file=sys.stderr)
-        return 1
+        if _is_ip(non_flags[0]):
+            explicit_ip = non_flags[0]
+            if len(non_flags) >= 2:
+                code_path = non_flags[1]
+        else:
+            # No explicit IP; treat first token as potential path
+            code_path = non_flags[0]
 
-    # Parse GPU requirements from environment
-    n_gpus = parse_n_gpus_from_env()
-    if n_gpus is not None:
-        print(f"🎛️ GPUs requested: {n_gpus}")
-
+    # Initialize Ray first
     ray_address_env = os.environ.get("RAY_ADDRESS")
     try:
         if ray_address_env:
@@ -354,29 +361,65 @@ def handle_code_command(argv: List[str]) -> int:
         else:
             if code_path:
                 print(
-                    "Warning: [path] is only used in remote mode (RAY_ADDRESS). Ignoring path."
+                    "Warning: [path] is only used in Ray Client mode (RAY_ADDRESS). Ignoring path."
                 )
-            # Already initialized above; no need to init again
+            ensure_ray_initialized()
+
     except Exception as e:
         msg = str(e)
         if "Version mismatch" in msg and "Python" in msg:
             print(
-                "❌ Ray/Python version mismatch between this process and the running local cluster.",
-                file=sys.stderr,
-            )
-            print(
-                "   Fix: either (1) run 'rayssh' from the same Python env that started the cluster,",
-                file=sys.stderr,
-            )
-            print(
-                "        or (2) restart the local cluster from this env: 'ray stop' then 'ray start --head'",
+                "❌ Ray/Python version mismatch between this process and the running cluster.",
                 file=sys.stderr,
             )
         else:
             print(f"Error initializing Ray: {e}", file=sys.stderr)
         return 1
 
-    actor_name = f"rayssh_code_on_worker_beta08_{worker_node_id}"
+    # Now select the target node (after Ray is initialized)
+    try:
+        worker_node_id = None
+        # Highest priority: explicit IP from CLI
+        if explicit_ip:
+            node = find_node_by_ip(explicit_ip)
+            if not node or not node.get("Alive"):
+                print(
+                    f"❌ Specified IP not found/alive: {explicit_ip}", file=sys.stderr
+                )
+                return 1
+            worker_node_id = node.get("NodeID")
+        else:
+            # Next: last session preferred IP
+            prefer_ip = load_last_session_preferred_ip()
+            if prefer_ip:
+                node = find_node_by_ip(prefer_ip)
+                if node and node.get("Alive"):
+                    worker_node_id = node.get("NodeID")
+            # Fallback: pick a worker (or head with -0)
+            if not worker_node_id:
+                worker_node_id = _select_worker_node_id(allow_head_if_no_worker)
+    except Exception as e:
+        print(f"Error selecting node: {e}", file=sys.stderr)
+        return 1
+
+    # Parse GPU requirements from environment
+    n_gpus = parse_n_gpus_from_env()
+    if n_gpus is not None:
+        print(f"🎛️ GPUs requested: {n_gpus}")
+
+    # Singleton CodeServerActor per node, include node IP in name
+    try:
+        nodes, _ = fetch_cluster_nodes()
+        node_ip = None
+        for n in nodes:
+            if n.get("NodeID") == worker_node_id:
+                node_ip = n.get("NodeManagerAddress")
+                break
+        safe_ip = (node_ip or "unknown").replace(".", "-")
+    except Exception:
+        safe_ip = "unknown"
+
+    actor_name = f"rayssh_code_{safe_ip}"
     try:
         # Try to reuse an existing named actor first
         try:
@@ -533,6 +576,17 @@ def handle_code_command(argv: List[str]) -> int:
                     print(f"   📁 {folder_url}")
             if result.get("password"):
                 print(f"   🔐 PASSWORD: {BOLD}{result['password']}{RESET}")
+            # Persist last session preference (by IP)
+            try:
+                nodes, _ = fetch_cluster_nodes()
+                for n in nodes:
+                    if n.get("NodeID") == worker_node_id:
+                        ip = n.get("NodeManagerAddress")
+                        if ip:
+                            write_last_session_node_ip(ip)
+                        break
+            except Exception:
+                pass
 
         # Tail logs (show only key information)
         try:

@@ -19,6 +19,9 @@ from utils import (
     fetch_cluster_nodes,
     get_head_node_id,
     parse_n_gpus_from_env,
+    load_last_session_preferred_ip,
+    find_node_by_ip,
+    write_last_session_node_ip,
 )
 
 
@@ -79,19 +82,7 @@ def handle_lab_command(argv: List[str]) -> int:
         else:
             lab_path = a
 
-    # Placement - state API will initialize Ray automatically
-    try:
-        worker_node_id = _select_worker_node_id(allow_head_if_no_worker)
-    except Exception as e:
-        print(f"Error selecting node: {e}", file=sys.stderr)
-        return 1
-
-    # Parse GPU requirements from environment
-    n_gpus = parse_n_gpus_from_env()
-    if n_gpus is not None:
-        print(f"🎛️ GPUs requested: {n_gpus}")
-
-    # Initialize Ray (may already be initialized by state API, but ensure proper configuration)
+    # Initialize Ray first
     ray_address_env = os.environ.get("RAY_ADDRESS")
     try:
         if ray_address_env:
@@ -105,39 +96,61 @@ def handle_lab_command(argv: List[str]) -> int:
         else:
             if lab_path:
                 print(
-                    "Warning: [path] is only used in remote mode (RAY_ADDRESS). Ignoring path."
+                    "Warning: [path] is only used in Ray Client mode (RAY_ADDRESS). Ignoring path."
                 )
-            # Already initialized above; no need to init again
+            ensure_ray_initialized()
     except Exception as e:
         msg = str(e)
         if "Version mismatch" in msg and "Python" in msg:
             print(
-                "❌ Ray/Python version mismatch between this process and the running local cluster.",
-                file=sys.stderr,
-            )
-            print(
-                "   Fix: either (1) run 'rayssh' from the same Python env that started the cluster,",
-                file=sys.stderr,
-            )
-            print(
-                "        or (2) restart the local cluster from this env: 'ray stop' then 'ray start --head'",
+                "❌ Ray/Python version mismatch between this process and the running cluster.",
                 file=sys.stderr,
             )
         else:
             print(f"Error initializing Ray: {e}", file=sys.stderr)
         return 1
 
-    # Singleton LabActor per node
-    actor_name = f"rayssh_lab_on_worker_beta02_{worker_node_id}"
+    # Placement - prefer last session IP if available (after Ray is initialized)
+    try:
+        prefer_ip = load_last_session_preferred_ip()
+        worker_node_id = None
+        if prefer_ip:
+            node = find_node_by_ip(prefer_ip)
+            if node and node.get("Alive"):
+                worker_node_id = node.get("NodeID")
+        if not worker_node_id:
+            worker_node_id = _select_worker_node_id(allow_head_if_no_worker)
+    except Exception as e:
+        print(f"Error selecting node: {e}", file=sys.stderr)
+        return 1
+
+    # Parse GPU requirements from environment
+    n_gpus = parse_n_gpus_from_env()
+    if n_gpus is not None:
+        print(f"🎛️ GPUs requested: {n_gpus}")
+
+    # Singleton LabActor per node, include node IP in the name
+    try:
+        nodes, _ = fetch_cluster_nodes()
+        node_ip = None
+        for n in nodes:
+            if n.get("NodeID") == worker_node_id:
+                node_ip = n.get("NodeManagerAddress")
+                break
+        safe_ip = (node_ip or "unknown").replace(".", "-")
+    except Exception:
+        safe_ip = "unknown"
+
+    actor_name = f"rayssh_lab_{safe_ip}"
     try:
         try:
-            cur_lab_actor = ray.get_actor(actor_name, namespace="rayssh_lab")
+            cur_lab_actor = ray.get_actor(actor_name, namespace="rayssh")
         except Exception:
             # Modules are now available job-wide via ray.init runtime_env
             actor_options = {
                 "name": actor_name,
                 "lifetime": "detached",
-                "namespace": "rayssh_lab",
+                "namespace": "rayssh",
                 "scheduling_strategy": ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
                     node_id=worker_node_id, soft=False
                 ),
@@ -179,6 +192,17 @@ def handle_lab_command(argv: List[str]) -> int:
         actual_url = result.get("url")
         if actual_url:
             print(f"🔗 {actual_url}")
+        # Persist last session preference (by IP)
+        try:
+            nodes, _ = fetch_cluster_nodes()
+            for n in nodes:
+                if n.get("NodeID") == worker_node_id:
+                    ip = n.get("NodeManagerAddress")
+                    if ip:
+                        write_last_session_node_ip(ip)
+                    break
+        except Exception:
+            pass
 
     # Tail logs (show only key information)
     try:
