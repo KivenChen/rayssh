@@ -11,6 +11,7 @@ import ray
 
 from .server import TerminalActor
 from .ws_client import TerminalClient
+from .sync_client import SyncClient
 from utils import (
     ensure_ray_initialized,
     find_target_node,
@@ -165,8 +166,8 @@ class RaySSHTerminal:
                 print(f"Server startup error: {e}")
                 return None
 
-    async def run(self):
-        """Run the terminal session."""
+    async def run(self, enable_sync: bool = False):
+        """Run the terminal session. Optionally start a sync client."""
         try:
             # Initialize Ray and find target
             self.initialize_ray()
@@ -200,6 +201,19 @@ class RaySSHTerminal:
                     print(
                         f"⚠️  Connecting to {connection_host} instead of requested {requested_ip}"
                     )
+
+            # Optionally start sync client concurrently
+            sync_task = None
+            if enable_sync and self.working_dir:
+                try:
+                    sync_client = SyncClient(self.working_dir)
+                    sync_task = asyncio.create_task(
+                        sync_client.run(connection_host, server_info["port"])
+                    )
+                    # Give sync a brief head start
+                    await asyncio.sleep(0.1)
+                except Exception as e:
+                    print(f"Warning: sync disabled due to error: {e}")
 
             await self.client.connect_to_terminal(connection_host, server_info["port"])
 

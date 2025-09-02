@@ -25,6 +25,7 @@ After installation, you can use the `rayssh` command from your terminal directly
 - `rayssh <file>` - Submit and run file as Ray job
 - `rayssh lab [-q] [path]` - Launch Jupyter Lab on a worker node; tails log for URL. With `-q`, exit after showing link. The optional `path` will be uploaded as working dir.
 - `rayssh code [-q] [path]` - Launch code-server (VS Code) on a worker node; behaves like `lab`. The optional `path` will be uploaded as working dir.
+- `rayssh sync <dir>` - Upload `<dir>`, open a terminal in it, and live-sync local text-file changes (≤1MB) to remote over the same WebSocket server.
 - `rayssh -l` - Interactive node selection
 - `rayssh --ls` - Print nodes table
 
@@ -63,6 +64,8 @@ echo "*.parquet" >> .gitignore
 vim runtime_env.yaml
 # Upload your project and start working
 rayssh .
+# Or keep local files as source of truth and live-sync while you work
+rayssh sync .
 # Your project files are now uploaded to remotely
 > ls                    # See your uploaded files
 > mount -t nfs 192.168.1.100:/workspace/datasets /mnt/datasets
@@ -101,6 +104,18 @@ rayssh code ~/my-project
 Notes:
 - code-server binds like Jupyter; on macOS, 80 becomes 8888 automatically.
 - A password is generated for each session.
+
+### 🔁 Live Sync (experimental)
+
+`rayssh sync <dir>` continuously watches your local `<dir>` and applies changes to the remote working directory while a terminal session is open.
+
+Limits and defaults:
+- Only text-like files up to 1MB are synced
+- Ignores common folders: `.git`, `.venv`, `node_modules`, `__pycache__`, `.DS_Store`, `.ipynb_checkpoints`
+- Uses the same WebSocket server on the node (port preference: 8081, then 443)
+- Initial upload still uses Ray Client `working_dir`; sync sends only subsequent deltas
+
+Future options may include bi-directional sync and custom ignore rules.
 
 Start a Jupyter Lab on a worker node that other machines can access:
 

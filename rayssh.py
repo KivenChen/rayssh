@@ -97,6 +97,11 @@ def main():
         elif argument == "code":
             return handle_code_command(["code"] + sys.argv[2:])
 
+        # Handle sync subcommand (expects a path)
+        elif argument == "sync":
+            # Delegate to sync handler path-aware flow below
+            pass
+
         # Handle special commands
         elif argument in ["--ls"]:
             return print_nodes_table()
@@ -174,6 +179,41 @@ def main():
             return handle_lab_command(["lab"] + sys.argv[2:])
         elif sys.argv[1] == "code":
             return handle_code_command(["code"] + sys.argv[2:])
+        elif sys.argv[1] == "sync":
+            # Expect a directory, require RAY_ADDRESS
+            sync_path = sys.argv[2]
+            ray_address_env = os.environ.get("RAY_ADDRESS")
+            if not (ray_address_env and os.path.isdir(sync_path)):
+                print(
+                    "Error: 'rayssh sync <dir>' requires RAY_ADDRESS and a valid directory",
+                    file=sys.stderr,
+                )
+                return 1
+            # Initialize Ray client with working_dir
+            try:
+                ensure_ray_initialized(
+                    ray_address=ray_address_env, working_dir=sync_path
+                )
+            except Exception as e:
+                print(f"Error initializing Ray: {e}", file=sys.stderr)
+                return 1
+            # Launch terminal with sync enabled
+            from terminal import RaySSHTerminal as _RaySSHTerminal
+
+            terminal = _RaySSHTerminal(
+                None, ray_address=ray_address_env, working_dir=sync_path
+            )
+            # Run with sync enabled
+            try:
+                asyncio.run(terminal.run(enable_sync=True))
+            except KeyboardInterrupt:
+                print("\nSession interrupted by user.")
+            except Exception as e:
+                print(f"Fatal error: {e}")
+                return 1
+            finally:
+                print("👋 Goodbye!")
+            return 0
         # Handle -- <command>
         elif sys.argv[1] == "--":
             import shlex
@@ -287,6 +327,7 @@ Usage:
     rayssh -l                       # Interactive node selection
     rayssh --ls                     # Print nodes table
     rayssh [lab|code] [path]        # Launch Jupyter Lab / code-server on remote
+    rayssh sync <dir>               # Upload <dir>, open terminal, and live-sync text files ≤1MB
     rayssh -- <command>             # Submit shell command as job
 
 Options:
@@ -306,6 +347,7 @@ Examples:
     rayssh [-q] script.py           # Submit Python job and wait. "-q" for no-wait.
     rayssh lab                      # Launch Jupyter Lab on worker node
     rayssh code ./src               # Launch code-server with uploaded directory
+    rayssh sync ./myproject         # Live-sync local edits to remote while in terminal
     rayssh -- nvidia-smi            # Submit shell command as job and tail logs
     n_gpus=8 rayssh train.py        # GPUs to request for job (through --entrypoint-num-gpus)
 

@@ -55,7 +55,18 @@ class TerminalActor:
         }
 
     async def handle_client(self, websocket, path):
-        """Handle a WebSocket client connection."""
+        """Handle a WebSocket client connection.
+
+        Route based on the request path. Terminal on '/', sync on '/sync'.
+        """
+        try:
+            if path and str(path).startswith("/sync"):
+                await self.handle_sync_session(websocket)
+                return
+        except Exception:
+            # Fallback to terminal if path handling fails
+            pass
+
         print(f"Terminal client connected from {websocket.remote_address}")
 
         # Create a new session for this client
@@ -76,6 +87,14 @@ class TerminalActor:
         try:
             # Start PTY for this session
             await self.start_pty_for_session(session_id)
+
+            # Send initial hello with session id
+            try:
+                await websocket.send(
+                    json.dumps({"type": "hello", "session_id": session_id})
+                )
+            except Exception:
+                pass
 
             # Create tasks for bidirectional communication
             pty_to_ws_task = asyncio.create_task(self.pty_to_websocket(session_id))
@@ -300,8 +319,8 @@ class TerminalActor:
 
     async def start_server(self, port: int = None):
         """Start the WebSocket server."""
-        # Try ports 8080 and 8081
-        ports_to_try = [port] if port else [8080, 8081]
+        # Try ports in the allowed set: prefer 8081, then 443
+        ports_to_try = [port] if port else [8081, 443]
 
         for port in ports_to_try:
             try:
@@ -332,6 +351,214 @@ class TerminalActor:
                         continue
                 else:
                     raise
+
+    async def handle_sync_session(self, websocket):
+        """Handle sync WebSocket session: apply file operations under working root."""
+        # Determine working root
+        if self.working_dir and os.path.isabs(self.working_dir):
+            root_dir = self.working_dir
+        else:
+            root_dir = os.getcwd()
+
+        def resolve_safe_path(relpath: str) -> Optional[str]:
+            try:
+                # Disallow absolute paths
+                if os.path.isabs(relpath):
+                    return None
+                # Normalize and join, then ensure within root
+                abs_path = os.path.abspath(os.path.join(root_dir, relpath))
+                root_abs = os.path.abspath(root_dir)
+                if not abs_path.startswith(root_abs + os.sep) and abs_path != root_abs:
+                    return None
+                return abs_path
+            except Exception:
+                return None
+
+        MAX_SIZE = 1024 * 1024  # 1MB
+
+        # Send ready
+        try:
+            await websocket.send(json.dumps({"type": "sync_ready"}))
+        except Exception:
+            return
+
+        while self.running:
+            try:
+                msg = await websocket.recv()
+                try:
+                    data = json.loads(msg)
+                except Exception:
+                    # Ignore non-JSON frames for sync channel
+                    continue
+
+                mtype = data.get("type")
+
+                if mtype == "sync_put":
+                    relpath = data.get("relpath")
+                    size = int(data.get("size", 0))
+                    if size > MAX_SIZE:
+                        await websocket.send(
+                            json.dumps(
+                                {
+                                    "type": "sync_error",
+                                    "relpath": relpath,
+                                    "error": "File too large",
+                                }
+                            )
+                        )
+                        continue
+                    dest = resolve_safe_path(relpath or "")
+                    if not dest:
+                        await websocket.send(
+                            json.dumps(
+                                {
+                                    "type": "sync_error",
+                                    "relpath": relpath,
+                                    "error": "Invalid path",
+                                }
+                            )
+                        )
+                        continue
+                    parent = os.path.dirname(dest)
+                    try:
+                        os.makedirs(parent, exist_ok=True)
+                        # Decode content
+                        import base64
+
+                        content_b64 = data.get("content", "")
+                        payload = base64.b64decode(content_b64)
+                        # Atomic write
+                        tmp_path = dest + ".tmp__rayssh"
+                        with open(tmp_path, "wb") as f:
+                            f.write(payload)
+                        os.replace(tmp_path, dest)
+                        # Apply mode and mtime if provided
+                        try:
+                            mode_str = data.get("mode")
+                            if mode_str:
+                                os.chmod(dest, int(mode_str, 8))
+                        except Exception:
+                            pass
+                        try:
+                            mtime = data.get("mtime")
+                            if isinstance(mtime, (int, float)):
+                                os.utime(dest, (time.time(), float(mtime)))
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        await websocket.send(
+                            json.dumps(
+                                {
+                                    "type": "sync_error",
+                                    "relpath": relpath,
+                                    "error": str(e),
+                                }
+                            )
+                        )
+                        continue
+
+                elif mtype == "sync_del":
+                    relpath = data.get("relpath")
+                    dest = resolve_safe_path(relpath or "")
+                    if not dest:
+                        await websocket.send(
+                            json.dumps(
+                                {
+                                    "type": "sync_error",
+                                    "relpath": relpath,
+                                    "error": "Invalid path",
+                                }
+                            )
+                        )
+                        continue
+                    try:
+                        if os.path.isdir(dest):
+                            # Best-effort remove empty dir
+                            os.rmdir(dest)
+                        elif os.path.exists(dest):
+                            os.remove(dest)
+                    except Exception as e:
+                        await websocket.send(
+                            json.dumps(
+                                {
+                                    "type": "sync_error",
+                                    "relpath": relpath,
+                                    "error": str(e),
+                                }
+                            )
+                        )
+                        continue
+
+                elif mtype == "sync_move":
+                    src = data.get("src")
+                    dst = data.get("dst")
+                    src_path = resolve_safe_path(src or "")
+                    dst_path = resolve_safe_path(dst or "")
+                    if not src_path or not dst_path:
+                        await websocket.send(
+                            json.dumps(
+                                {
+                                    "type": "sync_error",
+                                    "src": src,
+                                    "dst": dst,
+                                    "error": "Invalid path",
+                                }
+                            )
+                        )
+                        continue
+                    try:
+                        os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+                        os.replace(src_path, dst_path)
+                    except Exception as e:
+                        await websocket.send(
+                            json.dumps(
+                                {
+                                    "type": "sync_error",
+                                    "src": src,
+                                    "dst": dst,
+                                    "error": str(e),
+                                }
+                            )
+                        )
+                        continue
+
+                elif mtype == "sync_mkdir":
+                    relpath = data.get("relpath")
+                    dest = resolve_safe_path(relpath or "")
+                    if not dest:
+                        await websocket.send(
+                            json.dumps(
+                                {
+                                    "type": "sync_error",
+                                    "relpath": relpath,
+                                    "error": "Invalid path",
+                                }
+                            )
+                        )
+                        continue
+                    try:
+                        os.makedirs(dest, exist_ok=True)
+                    except Exception as e:
+                        await websocket.send(
+                            json.dumps(
+                                {
+                                    "type": "sync_error",
+                                    "relpath": relpath,
+                                    "error": str(e),
+                                }
+                            )
+                        )
+                        continue
+
+                else:
+                    # Unknown messages are ignored for sync channel
+                    pass
+
+            except websockets.exceptions.ConnectionClosed:
+                break
+            except Exception:
+                # Keep sync loop robust
+                continue
 
     def stop_server(self):
         """Stop the WebSocket server and clean up gracefully."""
