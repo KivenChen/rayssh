@@ -39,9 +39,8 @@ class TerminalActor:
         self.running = False
         self.port = None
         self.node_info = None
-        self.working_dir = working_dir
-        # Track multiple sessions
-        self.sessions = {}  # session_id -> {pty_master, pty_slave, shell_process, websocket}
+        self.default_working_dir = working_dir
+        self.sessions = {}  # session_id -> {pty_master, pty_slave, shell_process, websocket, working_dir}
 
     def get_node_info(self) -> Dict:
         """Get information about the current node."""
@@ -56,12 +55,27 @@ class TerminalActor:
 
     async def handle_client(self, websocket, path):
         """Handle a WebSocket client connection."""
-        print(f"Terminal client connected from {websocket.remote_address}")
+        print(f"Terminal client connected from {websocket.remote_address} with path: {path}")
 
         # Create a new session for this client
         import uuid
+        from urllib.parse import urlparse, parse_qs
 
         session_id = uuid.uuid4().hex
+
+        # Extract working directory from WebSocket path (RESTful style)
+        session_working_dir = None
+        if path:
+            try:
+                parsed = urlparse(path)
+                if parsed.query:
+                    query_params = parse_qs(parsed.query)
+                    workdir_list = query_params.get('workdir', [])
+                    if workdir_list and workdir_list[0]:
+                        session_working_dir = workdir_list[0]
+            except Exception as e:
+                print(f"Warning: Could not parse WebSocket path '{path}': {e}")
+                session_working_dir = None
 
         session = {
             "websocket": websocket,
@@ -69,6 +83,7 @@ class TerminalActor:
             "pty_slave": None,
             "shell_process": None,
             "created_at": time.time(),
+            "working_dir": session_working_dir or self.default_working_dir,
         }
 
         self.sessions[session_id] = session
@@ -111,10 +126,8 @@ class TerminalActor:
         configure_pty_for_signals(pty_slave)
 
         # Start shell process
-        # If no working_dir specified, use HOME directory (remote's HOME)
-        shell_cwd = (
-            self.working_dir if self.working_dir else os.environ.get("HOME", "/home")
-        )
+        # Use per-session working directory, fallback to HOME
+        shell_cwd = session.get("working_dir") or os.environ.get("HOME", "/home")
 
         def setup_child():
             """Set up the child process to properly handle signals."""

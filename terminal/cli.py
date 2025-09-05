@@ -8,6 +8,7 @@ import signal
 import asyncio
 import time
 import ray
+import os
 
 from .server import TerminalActor
 from .ws_client import TerminalClient
@@ -130,14 +131,12 @@ class RaySSHTerminal:
                     {"name": actor_name, "lifetime": "detached", "namespace": "rayssh"}
                 )
 
-                if self.working_dir:
-                    self.terminal_actor = TerminalActor.options(**actor_options).remote(
-                        working_dir=self.working_dir
-                    )
-                else:
-                    self.terminal_actor = TerminalActor.options(
-                        **actor_options
-                    ).remote()
+                print(f"🌐 Deploying terminal actor to remote")
+
+                # Create actor with default working_dir (will be overridden per session)
+                self.terminal_actor = TerminalActor.options(**actor_options).remote(
+                    working_dir=self.working_dir
+                )
 
             except Exception as e:
                 print(f"❌ Failed to place actor on target node {target_ip}: {e}")
@@ -201,7 +200,14 @@ class RaySSHTerminal:
                         f"⚠️  Connecting to {connection_host} instead of requested {requested_ip}"
                     )
 
-            await self.client.connect_to_terminal(connection_host, server_info["port"])
+            # Determine working directory for the session
+            session_workdir = None
+            if self.working_dir:
+                # In remote mode, Ray uploads the working_dir and makes it available as the current working directory
+                # In local mode, use the absolute path
+                session_workdir = os.getcwd() if self.is_remote_mode else os.path.abspath(self.working_dir)
+            
+            await self.client.connect_to_terminal(connection_host, server_info["port"], working_dir=session_workdir)
 
             # Save the successfully connected IP as last session
             write_last_session_node_ip(connection_host)
