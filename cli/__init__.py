@@ -13,7 +13,9 @@ from .node import (
 from .job import submit_file_job
 from .lab import handle_lab_command
 from .code import handle_code_command
+from .debug import handle_debug_command
 from .job import submit_shell_command
+from .cursor import handle_tell_cursor_command
 
 __all__ = [
     "get_ordered_nodes",
@@ -24,5 +26,7 @@ __all__ = [
     "submit_file_job",
     "handle_lab_command",
     "handle_code_command",
+    "handle_debug_command",
     "submit_shell_command",
+    "handle_tell_cursor_command",
 ]

@@ -23,6 +23,8 @@ from cli import (
     submit_shell_command,
     handle_lab_command,
     handle_code_command,
+    handle_debug_command,
+    handle_tell_cursor_command,
 )
 from utils import (
     ensure_ray_initialized,
@@ -97,6 +99,14 @@ def main():
         elif argument == "code":
             return handle_code_command(["code"] + sys.argv[2:])
 
+        # Handle debug subcommand
+        elif argument == "debug":
+            return handle_debug_command(["debug"] + sys.argv[2:])
+
+        # Handle tell-cursor subcommand
+        elif argument == "tell-cursor":
+            return handle_tell_cursor_command(["tell-cursor"] + sys.argv[2:])
+
         # Handle special commands
         elif argument in ["--ls"]:
             return print_nodes_table()
@@ -169,33 +179,43 @@ def main():
                 )
                 return 1
 
-        # Handle lab and code subcommands with a single extra argument
+        # Handle lab, code, debug, and tell-cursor subcommands with a single extra argument
         elif sys.argv[1] == "lab":
             return handle_lab_command(["lab"] + sys.argv[2:])
         elif sys.argv[1] == "code":
             return handle_code_command(["code"] + sys.argv[2:])
+        elif sys.argv[1] == "debug":
+            return handle_debug_command(["debug"] + sys.argv[2:])
+        elif sys.argv[1] == "tell-cursor":
+            return handle_tell_cursor_command(["tell-cursor"] + sys.argv[2:])
         # Handle -- <command>
         elif sys.argv[1] == "--":
             import shlex
 
             return submit_shell_command(shlex.join(sys.argv[2:]))
 
-        # Handle -0 lab and -0 code patterns
+        # Handle -0 lab, -0 code, and -0 debug patterns
         elif sys.argv[1] == "-0":
             if sys.argv[2] == "lab":
                 return handle_lab_command(["-0", "lab"] + sys.argv[3:])
             elif sys.argv[2] == "code":
                 return handle_code_command(["-0", "code"] + sys.argv[3:])
+            elif sys.argv[2] == "debug":
+                return handle_debug_command(["-0", "debug"] + sys.argv[3:])
             else:
                 # Fall through to node index handling
                 pass
 
     elif len(sys.argv) > 3:
-        # Handle lab and code commands with additional arguments (like paths)
+        # Handle lab, code, debug, and tell-cursor commands with additional arguments (like paths)
         if sys.argv[1] == "lab":
             return handle_lab_command(["lab"] + sys.argv[2:])
         elif sys.argv[1] == "code":
             return handle_code_command(["code"] + sys.argv[2:])
+        elif sys.argv[1] == "debug":
+            return handle_debug_command(["debug"] + sys.argv[2:])
+        elif sys.argv[1] == "tell-cursor":
+            return handle_tell_cursor_command(["tell-cursor"] + sys.argv[2:])
         elif sys.argv[1] == "--":
             # Join the rest as a properly quoted command string
             import shlex
@@ -206,6 +226,8 @@ def main():
                 return handle_lab_command(["-0", "lab"] + sys.argv[3:])
             elif sys.argv[2] == "code":
                 return handle_code_command(["-0", "code"] + sys.argv[3:])
+            elif sys.argv[2] == "debug":
+                return handle_debug_command(["-0", "debug"] + sys.argv[3:])
             else:
                 print_help()
                 return 1
@@ -286,7 +308,8 @@ Usage:
     rayssh [-q] <file>              # Submit file as Ray job, -q for no-wait
     rayssh -l                       # Interactive node selection
     rayssh --ls                     # Print nodes table
-    rayssh [lab|code] [path]        # Launch Jupyter Lab / code-server on remote
+    rayssh [lab|code|debug] [path]  # Launch Jupyter Lab / code-server / debug code-server on remote
+    rayssh tell-cursor [dir]        # Create .cursorrules file for debugging guidance
     rayssh -- <command>             # Submit shell command as job
 
 Options:
@@ -306,6 +329,9 @@ Examples:
     rayssh [-q] script.py           # Submit Python job and wait. "-q" for no-wait.
     rayssh lab                      # Launch Jupyter Lab on worker node
     rayssh code ./src               # Launch code-server with uploaded directory
+    rayssh debug ./src              # Launch debug-enabled code-server with Ray debugging
+    rayssh tell-cursor              # Create .cursorrules in current directory
+    rayssh tell-cursor ./myproject  # Create .cursorrules in specific directory
     rayssh -- nvidia-smi            # Submit shell command as job and tail logs
     n_gpus=8 rayssh train.py        # GPUs to request for job (through --entrypoint-num-gpus)
 
@@ -317,6 +343,7 @@ Environment Variables:
 🚀 Job submission: Python/Bash files, with working dir upload.
 🔬 Lab features: Jupyter Lab on Ray nodes with optional working dir upload
 💻 Code features: VS Code server on Ray nodes with working dir upload
+🐛 Debug features: Ray-enabled VS Code server with debugging extensions and environment
  """
     print(help_text.strip())
 

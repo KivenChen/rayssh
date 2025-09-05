@@ -29,9 +29,14 @@ class TerminalClient:
         self._last_cols = None
         self.session_id = None
 
-    async def connect_to_terminal(self, host: str, port: int):
+    async def connect_to_terminal(self, host: str, port: int, working_dir: str = None):
         """Connect to the terminal server and start interactive session."""
-        uri = f"ws://{host}:{port}"
+        # Build RESTful WebSocket URI with working directory as query parameter
+        if working_dir:
+            from urllib.parse import quote
+            uri = f"ws://{host}:{port}/session?workdir={quote(working_dir)}"
+        else:
+            uri = f"ws://{host}:{port}/session"
         print(f"🔌 Connecting to terminal at {uri}...")
 
         try:
