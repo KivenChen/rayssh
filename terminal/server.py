@@ -27,6 +27,19 @@ from .utils import (
 
 
 @ray.remote(num_gpus=0)
+class WorkdirActor:
+    """
+    Simple actor to resolve Ray-managed working directory.
+    Created with runtime_env={"working_dir": path} to get the remote path.
+    """
+    
+    def get_working_dir(self):
+        """Get the current working directory (Ray-managed)"""
+        import os
+        return os.getcwd()
+
+
+@ray.remote(num_gpus=0)
 class TerminalActor:
     """
     Ray actor that provides a WebSocket-based terminal interface.

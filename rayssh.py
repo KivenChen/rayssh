@@ -127,8 +127,6 @@ def main():
             # It's a directory and we're in remote mode - upload and connect
             working_dir = argument
             print(f"📁 Directory specified: {argument}")
-            print(f"📦 Uploading directory: {os.path.abspath(working_dir)}")
-
         # Check if it's a directory but no RAY_ADDRESS
         elif os.path.exists(argument) and os.path.isdir(argument):
             print(

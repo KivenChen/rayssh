@@ -749,3 +749,76 @@ def download_code_server_if_needed(os_name: str, arch: str) -> Optional[str]:
     except Exception as e:
         print(f"❌ Error preparing code-server: {e}")
         return None
+
+
+def get_ray_dashboard_info() -> dict:
+    """
+    Extract Ray dashboard information from the Ray context.
+    
+    Returns:
+        dict: Contains 'dashboard_url', 'host', and 'port' keys if available.
+              Returns empty dict if no dashboard info is available.
+    """
+    import ray
+    
+    dashboard_info = {
+        'dashboard_url': None,
+        'host': None,
+        'port': None
+    }
+    
+    try:
+        # Get the Ray context which contains dashboard information
+        context = ray.util.client._default_context
+        if context and hasattr(context, 'dashboard_url') and context.dashboard_url:
+            dashboard_url = context.dashboard_url
+            dashboard_info['dashboard_url'] = dashboard_url
+            
+            # Parse host and port from dashboard URL
+            if dashboard_url.startswith('http://'):
+                url_part = dashboard_url[7:]  # Remove 'http://'
+                if ':' in url_part:
+                    host, port_str = url_part.split(':', 1)
+                    dashboard_info['host'] = host
+                    try:
+                        dashboard_info['port'] = int(port_str)
+                    except ValueError:
+                        dashboard_info['port'] = 8265  # Default Ray dashboard port
+                else:
+                    dashboard_info['host'] = url_part
+                    dashboard_info['port'] = 8265  # Default Ray dashboard port
+            return dashboard_info
+            
+        # Fallback: try to extract from RAY_ADDRESS environment variable
+        import os
+        ray_address_env = os.environ.get("RAY_ADDRESS")
+        if ray_address_env and ray_address_env.startswith("ray://"):
+            try:
+                # Extract host:port from ray://host:port
+                address_part = ray_address_env[6:]  # Remove "ray://" prefix
+                if ":" in address_part:
+                    host = address_part.rsplit(":", 1)[0]
+                    port_str = address_part.rsplit(":", 1)[1]
+                    client_port = int(port_str)
+                    # Common Ray setup: client port 10001 maps to dashboard port 8265
+                    if client_port == 10001:
+                        dashboard_port = 8265
+                    else:
+                        # For other ports, assume dashboard is client_port - 1736 (10001 - 8265)
+                        dashboard_port = client_port - 1736
+                else:
+                    host = address_part
+                    dashboard_port = 8265  # Default Ray dashboard port
+                
+                dashboard_info['host'] = host
+                dashboard_info['port'] = dashboard_port
+                dashboard_info['dashboard_url'] = f"http://{host}:{dashboard_port}"
+                
+            except (ValueError, IndexError):
+                pass
+                
+    except Exception as e:
+        # Silently fail - caller can handle empty result
+        pass
+    
+    return dashboard_info
