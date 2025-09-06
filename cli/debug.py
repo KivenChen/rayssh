@@ -23,6 +23,7 @@ from utils import (
     load_last_session_preferred_ip,
     find_node_by_ip,
     write_last_session_node_ip,
+    get_ray_dashboard_info,
 )
 
 
@@ -64,35 +65,6 @@ def _select_worker_node_id(allow_head_if_no_worker: bool) -> str:
     raise RuntimeError(
         "No worker nodes available. Use '-0' before the command to allow placing on the head node."
     )
-
-
-def _parse_dashboard_port_from_ray_address(ray_address: str) -> Optional[int]:
-    """
-    Parse Ray client address and convert client port to dashboard port.
-    Ray client typically runs on port 10001, dashboard on 8265.
-    """
-    if not ray_address or not ray_address.startswith("ray://"):
-        return None
-    
-    try:
-        # Extract host:port from ray://host:port
-        address_part = ray_address[6:]  # Remove "ray://" prefix
-        if ":" in address_part:
-            host, port_str = address_part.rsplit(":", 1)
-            client_port = int(port_str)
-            # Common Ray setup: client port 10001 maps to dashboard port 8265
-            # But this can vary, so we'll use a heuristic
-            if client_port == 10001:
-                return 8265
-            else:
-                # For other ports, assume dashboard is client_port - 1736 (10001 - 8265)
-                return client_port - 1736
-        else:
-            # No port specified, assume default dashboard port
-            return 8265
-    except (ValueError, IndexError):
-        # Default to Ray's standard dashboard port
-        return 8265
 
 
 def handle_debug_command(argv: List[str]) -> int:
@@ -187,23 +159,16 @@ def handle_debug_command(argv: List[str]) -> int:
     if n_gpus is not None:
         print(f"🎛️ GPUs requested: {n_gpus}")
 
-    # Get cluster info for dashboard port calculation
-    dashboard_port = None
-    cluster_host = None
-    if ray_address_env:
-        dashboard_port = _parse_dashboard_port_from_ray_address(ray_address_env)
-        # Extract host from ray://host:port
-        try:
-            address_part = ray_address_env[6:]  # Remove "ray://" prefix
-            if ":" in address_part:
-                cluster_host = address_part.rsplit(":", 1)[0]
-            else:
-                cluster_host = address_part
-        except:
-            pass
+    # Get cluster info for dashboard URL from Ray context
+    dashboard_info = get_ray_dashboard_info()
+    dashboard_url = dashboard_info.get('dashboard_url')
+    cluster_host = dashboard_info.get('host')
+    dashboard_port = dashboard_info.get('port')
 
     print(f"🐛 Starting debug mode with Ray debugging enabled")
-    if dashboard_port and cluster_host:
+    if dashboard_url:
+        print(f"🔗 Ray dashboard: {dashboard_url}")
+    elif dashboard_port and cluster_host:
         print(f"🔗 Ray dashboard: http://{cluster_host}:{dashboard_port}")
 
     # Singleton CodeServerActor per node, include node IP in name
@@ -336,6 +301,7 @@ def handle_debug_command(argv: List[str]) -> int:
         
         # Pass debug configuration to the actor
         debug_config = {
+            "ray_dashboard_url": dashboard_url,
             "ray_dashboard_host": cluster_host,
             "ray_dashboard_port": dashboard_port,
         }

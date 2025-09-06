@@ -218,19 +218,40 @@ class DebugCodeServerActor(CodeServerActor):
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    # TODO(kiv): examine the real effective settings
     def _configure_ray_cluster(self, debug_config: Dict) -> Dict:
         """Configure Ray cluster connection for debugging"""
         try:
+            # Prefer the full dashboard URL if available
+            dashboard_url = debug_config.get("ray_dashboard_url")
             ray_host = debug_config.get("ray_dashboard_host")
             ray_port = debug_config.get("ray_dashboard_port")
             
-            if not ray_host or not ray_port:
+            if dashboard_url:
+                print(f"🔗 Ray cluster configured: {dashboard_url}")
+            elif ray_host and ray_port:
+                print(f"🔗 Ray cluster configured: {ray_host}:{ray_port}")
+            else:
                 return {"success": False, "error": "Missing Ray cluster configuration"}
 
-            # Create or update VS Code settings for Ray cluster
-            # This would typically go in the workspace .vscode/settings.json
-            # For now, we'll just log the configuration
-            print(f"🔗 Ray cluster configured: {ray_host}:{ray_port}")
+            # Set environment variables for Ray debugging
+            if dashboard_url:
+                # Extract host and port from full URL for environment variables
+                if dashboard_url.startswith('http://'):
+                    url_part = dashboard_url[7:]  # Remove 'http://'
+                    if ':' in url_part:
+                        host, port_str = url_part.split(':', 1)
+                        self.env["RAY_DASHBOARD_HOST"] = host
+                        self.env["RAY_DASHBOARD_PORT"] = port_str
+                    else:
+                        self.env["RAY_DASHBOARD_HOST"] = url_part
+                        self.env["RAY_DASHBOARD_PORT"] = "8265"
+                else:
+                    self.env["RAY_DASHBOARD_HOST"] = ray_host or "localhost"
+                    self.env["RAY_DASHBOARD_PORT"] = str(ray_port or 8265)
+            else:
+                self.env["RAY_DASHBOARD_HOST"] = ray_host
+                self.env["RAY_DASHBOARD_PORT"] = str(ray_port)
             
             # In a real implementation, you might want to:
             # 1. Create .vscode/settings.json in the workspace
@@ -270,4 +291,7 @@ class DebugCodeServerActor(CodeServerActor):
         if isinstance(info, dict):
             info["debug_enabled"] = True
             info["debug_env_vars"] = self.debug_env_vars
+            # Add Ray dashboard information if available
+            if "RAY_DASHBOARD_HOST" in self.env and "RAY_DASHBOARD_PORT" in self.env:
+                info["ray_dashboard_url"] = f"http://{self.env['RAY_DASHBOARD_HOST']}:{self.env['RAY_DASHBOARD_PORT']}"
         return info
