@@ -156,13 +156,11 @@ def submit_file_job(file_path: str, no_wait: bool = False) -> int:
             print(f"🧩 Runtime env: ./{runtime_env_file}")
         else:
             print(
-                f"🧩 Runtime env: remote (create runtime_env.yaml or runtime_env.yml to customize)"
+                f"🧩 Runtime env: remote (create runtime_env.yaml to customize)"
             )
         if gpu_str is not None:
             print(f"🎛️ GPUs: {gpu_str}")
         print(f"📋 Command: {' '.join(cmd)}")
-        print("⚠️  Experimental feature - file execution via Ray job submission")
-        print(f"🆔 Submission ID: {submission_id}")
         print()
 
         # Execute the ray job submit command
@@ -217,7 +215,7 @@ def submit_shell_command(command: str) -> int:
             cmd.append(entrypoint_num_gpus_arg)
 
         # Prefer runtime_env.yaml if present
-        runtime_env_candidates = ["runtime_env.yaml", "runtime_env.yml"]
+        runtime_env_candidates = ["runtime_env.yaml"]
         runtime_env_file = next(
             (f for f in runtime_env_candidates if os.path.isfile(f)), None
         )
