@@ -31,36 +31,25 @@ class TerminalClient:
 
     async def connect_to_terminal(self, host: str, port: int, working_dir: str = None):
         """Connect to the terminal server and start interactive session."""
-        # Build RESTful WebSocket URI with working directory as query parameter
+        # Generate session ID
+        import uuid
+        self.session_id = uuid.uuid4().hex
+        
+        # Build RESTful WebSocket URI with session ID and working directory as query parameters
+        from urllib.parse import quote, urlencode
+        
+        query_params = {"session_id": self.session_id}
         if working_dir:
-            from urllib.parse import quote
-            uri = f"ws://{host}:{port}/session?workdir={quote(working_dir)}"
-        else:
-            uri = f"ws://{host}:{port}/session"
-        print(f"🔌 Connecting to terminal at {uri}...")
+            query_params["workdir"] = working_dir
+        
+        query_string = urlencode(query_params)
+        uri = f"ws://{host}:{port}/session?{query_string}"
+        print(f"🔌 Connecting to terminal at ws://{host}:{port}...")
 
         try:
             # Connect to WebSocket
             self.websocket = await websockets.connect(uri)
             print("✅ Connected! Terminal session started.")
-
-            # Expect an initial hello containing session_id
-            try:
-                hello = await asyncio.wait_for(self.websocket.recv(), timeout=2.0)
-                try:
-                    hello_data = json.loads(hello)
-                    if (
-                        isinstance(hello_data, dict)
-                        and hello_data.get("type") == "hello"
-                    ):
-                        self.session_id = hello_data.get("session_id")
-                        if self.session_id:
-                            # print(f"🔑 Session ID: {self.session_id}")
-                            pass
-                except Exception:
-                    pass
-            except Exception:
-                pass
 
             # Set terminal to raw mode
             self.setup_terminal()
@@ -224,12 +213,9 @@ class TerminalClient:
                         sys.stdout.flush()
                     continue
 
-                # JSON control messages (e.g., hello)
+                # JSON control messages (if any in the future)
                 data = json.loads(message)
-                if data.get("type") == "hello" and not self.session_id:
-                    sid = data.get("session_id")
-                    if isinstance(sid, str):
-                        self.session_id = sid
+                # Currently no JSON control messages expected
 
             except websockets.exceptions.ConnectionClosed:
                 # Signal shutdown and exit loop; cleanup will restore terminal

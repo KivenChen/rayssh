@@ -70,25 +70,34 @@ class TerminalActor:
         """Handle a WebSocket client connection."""
         print(f"Terminal client connected from {websocket.remote_address} with path: {path}")
 
-        # Create a new session for this client
-        import uuid
+        # Parse session ID and working directory from WebSocket path (RESTful style)
         from urllib.parse import urlparse, parse_qs
-
-        session_id = uuid.uuid4().hex
-
-        # Extract working directory from WebSocket path (RESTful style)
+        
+        session_id = None
         session_working_dir = None
+        
         if path:
             try:
                 parsed = urlparse(path)
                 if parsed.query:
                     query_params = parse_qs(parsed.query)
+                    
+                    # Extract session ID
+                    session_id_list = query_params.get('session_id', [])
+                    if session_id_list and session_id_list[0]:
+                        session_id = session_id_list[0]
+                    
+                    # Extract working directory
                     workdir_list = query_params.get('workdir', [])
                     if workdir_list and workdir_list[0]:
                         session_working_dir = workdir_list[0]
             except Exception as e:
                 print(f"Warning: Could not parse WebSocket path '{path}': {e}")
-                session_working_dir = None
+        
+        # Generate session ID if not provided
+        if not session_id:
+            import uuid
+            session_id = uuid.uuid4().hex
         session = {
             "websocket": websocket,
             "pty_master": None,
