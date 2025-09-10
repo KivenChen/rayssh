@@ -25,6 +25,8 @@ from cli import (
     handle_code_command,
     handle_debug_command,
     handle_tell_cursor_command,
+    handle_push_command,
+    handle_pull_command,
 )
 from utils import (
     ensure_ray_initialized,
@@ -107,6 +109,12 @@ def main():
         elif argument == "tell-cursor":
             return handle_tell_cursor_command(["tell-cursor"] + sys.argv[2:])
 
+        # Handle push/pull subcommands
+        elif argument == "push":
+            return handle_push_command(["push"] + sys.argv[2:])
+        elif argument == "pull":
+            return handle_pull_command(["pull"] + sys.argv[2:])
+
         # Handle special commands
         elif argument in ["--ls"]:
             return print_nodes_table()
@@ -186,6 +194,10 @@ def main():
             return handle_debug_command(["debug"] + sys.argv[2:])
         elif sys.argv[1] == "tell-cursor":
             return handle_tell_cursor_command(["tell-cursor"] + sys.argv[2:])
+        elif sys.argv[1] == "push":
+            return handle_push_command(["push"] + sys.argv[2:])
+        elif sys.argv[1] == "pull":
+            return handle_pull_command(["pull"] + sys.argv[2:])
         # Handle -- <command>
         elif sys.argv[1] == "--":
             import shlex
@@ -214,6 +226,10 @@ def main():
             return handle_debug_command(["debug"] + sys.argv[2:])
         elif sys.argv[1] == "tell-cursor":
             return handle_tell_cursor_command(["tell-cursor"] + sys.argv[2:])
+        elif sys.argv[1] == "push":
+            return handle_push_command(["push"] + sys.argv[2:])
+        elif sys.argv[1] == "pull":
+            return handle_pull_command(["pull"] + sys.argv[2:])
         elif sys.argv[1] == "--":
             # Join the rest as a properly quoted command string
             import shlex
