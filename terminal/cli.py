@@ -104,7 +104,7 @@ class RaySSHTerminal:
         )
 
         if self.is_remote_mode:
-            # Ray Client mode: select a worker node ourselves instead of using SPREAD
+            # Ray Client mode: prefer last-connected node (soft), fallback to selection
             n_gpus = parse_n_gpus_from_env()
             try:
                 self.target_node = select_worker_node(n_gpus=n_gpus)
@@ -131,9 +131,10 @@ class RaySSHTerminal:
         target_node_id = self.target_node["NodeID"]
         target_ip = self.target_node["NodeManagerAddress"]
 
+        # Use soft placement: prefer chosen node, but allow Ray to place elsewhere if needed
         actor_options["scheduling_strategy"] = (
             ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
-                node_id=target_node_id, soft=False
+                node_id=target_node_id, soft=True
             )
         )
 
