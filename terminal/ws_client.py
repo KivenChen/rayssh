@@ -28,23 +28,34 @@ class TerminalClient:
         self._last_rows = None
         self._last_cols = None
         self.session_id = None
+        self.gpu_daemon_actor = None
 
-    async def connect_to_terminal(self, host: str, port: int, working_dir: str = None):
+    async def connect_to_terminal(self, host: str, port: int, working_dir: str = None, cuda_visible_devices: str = None, gpu_daemon_actor=None):
         """Connect to the terminal server and start interactive session."""
         # Generate session ID
         import uuid
         self.session_id = uuid.uuid4().hex
         
-        # Build RESTful WebSocket URI with session ID and working directory as query parameters
+        # Store GPU daemon actor reference for cleanup
+        self.gpu_daemon_actor = gpu_daemon_actor
+        
+        # Build RESTful WebSocket URI with session ID, working directory, and CUDA devices as query parameters
         from urllib.parse import quote, urlencode
         
         query_params = {"session_id": self.session_id}
         if working_dir:
             query_params["workdir"] = working_dir
+        if cuda_visible_devices is not None:
+            query_params["cuda_visible_devices"] = cuda_visible_devices
+            # print(f"🐛 Debug: Adding CUDA devices to query: {cuda_visible_devices}")
+        else:
+            # print(f"🐛 Debug: No CUDA devices to add (cuda_visible_devices={cuda_visible_devices})")
+            pass
         
         query_string = urlencode(query_params)
         uri = f"ws://{host}:{port}/session?{query_string}"
         print(f"🔌 Connecting to terminal at ws://{host}:{port}...")
+        # print(f"🐛 Debug: WebSocket URI: {uri}")
 
         try:
             # Connect to WebSocket
@@ -253,6 +264,15 @@ class TerminalClient:
             self.restore_terminal()
         except Exception:
             pass
+
+        # Clean up GPU daemon actor
+        if self.gpu_daemon_actor:
+            try:
+                import ray
+                # print("🎛️ Cleaning up GPU daemon actor")
+                ray.kill(self.gpu_daemon_actor)
+            except Exception as e:
+                print(f"⚠️  Error cleaning up GPU daemon actor: {e}")
 
         # Close WebSocket connection gracefully
         if self.websocket:

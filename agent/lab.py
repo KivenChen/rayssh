@@ -14,10 +14,6 @@ import ray
 import shlex
 
 
-def _detect_accessible_ip() -> str:
-    return detect_accessible_ip()
-
-
 @ray.remote(num_gpus=0)
 class LabActor:
     """
@@ -102,7 +98,7 @@ class LabActor:
                     f"~/.rayssh/jupyter-lab-{timestamp}.log"
                 )
 
-                self.host_ip = _detect_accessible_ip()
+                self.host_ip = detect_accessible_ip()
 
                 # On macOS development machines, avoid privileged ports
                 port = adjust_port_for_macos(port, 8888)

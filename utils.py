@@ -478,9 +478,12 @@ def fetch_cluster_nodes() -> tuple[list[Dict], Optional[str]]:
 
 # ============ Common helpers for service actors ============
 
-
 def detect_accessible_ip() -> str:
-    """Determine an accessible IP address without internet calls.
+    return ray.util.get_node_ip_address()
+
+def _fallback_detect_accessible_ip() -> str:
+    """Determine an accessible IP address without internet calls
+     or querying the Ray runtime.
 
     Linux: use `ip route get` to extract src IP.
     macOS: use `route -n get default` -> `ipconfig getifaddr`.

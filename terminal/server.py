@@ -39,6 +39,56 @@ class WorkdirActor:
         return os.getcwd()
 
 
+@ray.remote
+class GPUDaemonActor:
+    """
+    GPU daemon actor that allocates GPUs and provides CUDA_VISIBLE_DEVICES to shell processes.
+    This actor's only job is to occupy GPU resources and make them available to shell processes.
+    """
+    
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+        self.cuda_visible_devices = None
+        self._initialize_gpu_env()
+    
+    def _initialize_gpu_env(self):
+        """Initialize and capture GPU environment variables."""
+        import os
+        self.cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+        print(f"🎛️ GPU daemon for session {self.session_id}: CUDA_VISIBLE_DEVICES={self.cuda_visible_devices}")
+    
+    def get_gpu_env(self):
+        """Get GPU environment variables for shell process."""
+        import os
+        return {
+            "CUDA_VISIBLE_DEVICES": self.cuda_visible_devices or "",
+            "RAY_SESSION_GPUS": str(self.get_allocated_gpu_count()),
+            "RAY_SESSION_ID": self.session_id,
+        }
+    
+    def get_allocated_gpu_count(self):
+        """Get the number of allocated GPUs."""
+        if not self.cuda_visible_devices:
+            return 0
+        return len([x.strip() for x in self.cuda_visible_devices.split(",") if x.strip()])
+    
+    def ping(self):
+        """Keep-alive method to ensure actor stays active."""
+        return f"GPU daemon for session {self.session_id} is alive"
+    
+    def get_node_info(self):
+        """Get the node ID and IP where this GPU daemon actor is running."""
+        import ray
+        
+        node_id = ray.get_runtime_context().get_node_id()
+        node_ip = ray.util.get_node_ip_address()
+        
+        return {
+            "node_id": node_id,
+            "node_ip": node_ip
+        }
+
+
 @ray.remote(num_gpus=0)
 class TerminalActor:
     """
@@ -70,11 +120,12 @@ class TerminalActor:
         """Handle a WebSocket client connection."""
         print(f"Terminal client connected from {websocket.remote_address} with path: {path}")
 
-        # Parse session ID and working directory from WebSocket path (RESTful style)
+        # Parse session ID, working directory, and CUDA devices from WebSocket path (RESTful style)
         from urllib.parse import urlparse, parse_qs
         
         session_id = None
         session_working_dir = None
+        session_cuda_visible_devices = None
         
         if path:
             try:
@@ -91,6 +142,11 @@ class TerminalActor:
                     workdir_list = query_params.get('workdir', [])
                     if workdir_list and workdir_list[0]:
                         session_working_dir = workdir_list[0]
+                    
+                    # Extract CUDA_VISIBLE_DEVICES
+                    cuda_devices_list = query_params.get('cuda_visible_devices', [])
+                    if cuda_devices_list and cuda_devices_list[0]:
+                        session_cuda_visible_devices = cuda_devices_list[0]
             except Exception as e:
                 print(f"Warning: Could not parse WebSocket path '{path}': {e}")
         
@@ -105,6 +161,7 @@ class TerminalActor:
             "shell_process": None,
             "created_at": time.time(),
             "working_dir": session_working_dir or self.default_working_dir,
+            "cuda_visible_devices": session_cuda_visible_devices,
         }
 
         self.sessions[session_id] = session
@@ -137,6 +194,18 @@ class TerminalActor:
     async def start_pty_for_session(self, session_id: str):
         """Start the PTY session with a shell for a specific session."""
         session = self.sessions[session_id]
+        session_cuda_visible_devices = session.get("cuda_visible_devices")
+
+        # Prepare GPU environment if CUDA devices are provided by client
+        gpu_env = {}
+        if session_cuda_visible_devices:
+            gpu_count = len([x.strip() for x in session_cuda_visible_devices.split(",") if x.strip()])
+            gpu_env = {
+                "CUDA_VISIBLE_DEVICES": session_cuda_visible_devices,
+                "RAY_SESSION_GPUS": str(gpu_count),
+                "RAY_SESSION_ID": session_id,
+            }
+            print(f"🎛️ Session {session_id}: Using GPU environment from client: {gpu_env}")
 
         # Create PTY
         pty_master, pty_slave = pty.openpty()
@@ -154,15 +223,21 @@ class TerminalActor:
             """Set up the child process to properly handle signals."""
             setup_controlling_terminal(pty_slave)
 
+        # Prepare shell environment with GPU access if requested
+        shell_env = os.environ.copy()
+        shell_env.update({"TERM": shell_env.get("TERM", "xterm-256color")})
+        
+        # Add GPU environment variables from daemon actor
+        if gpu_env:
+            shell_env.update(gpu_env)
+
         shell_process = subprocess.Popen(
             [os.environ.get("SHELL", "/bin/bash")],
             stdin=pty_slave,
             stdout=pty_slave,
             stderr=pty_slave,
             preexec_fn=setup_child,
-            env=(lambda e: (e.update({"TERM": e.get("TERM", "xterm-256color")})) or e)(
-                os.environ.copy()
-            ),
+            env=shell_env,
             cwd=shell_cwd,
         )
 
@@ -200,6 +275,8 @@ class TerminalActor:
                     shell_process.wait(timeout=1)
                 except Exception:
                     pass
+
+        # GPU daemon actor is managed by the client, no cleanup needed here
 
         # Close PTY
         pty_master = session.get("pty_master")
