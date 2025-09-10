@@ -242,12 +242,13 @@ def main():
             print(f"Error initializing Ray: {e}", file=sys.stderr)
             return 1
     elif node_arg:
-        # Cluster connection - ensure Ray is initialized
+        # Cluster connection - ensure Ray is initialized without uploading local cwd
         try:
             import ray as _ray
 
             if not _ray.is_initialized():
-                ensure_ray_initialized()
+                # Use connect_only to avoid starting a local cluster with cwd upload
+                ensure_ray_initialized(connect_only=True)
         except Exception as e:
             print(f"Error initializing Ray: {e}", file=sys.stderr)
             return 1
