@@ -13,6 +13,23 @@ import sys
 from utils import ensure_ray_initialized
 
 
+def _generate_submission_id(kind: str | None = None) -> str:
+    """Generate a concise, mostly-unique Ray job submission id.
+
+    Format: {username}_[{kind}_]{yymmddHHMMSS}
+    """
+    try:
+        username = (
+            os.environ.get("USER") or os.environ.get("LOGNAME") or getpass.getuser()
+        )
+    except Exception:
+        username = "rayuser"
+    ts = datetime.datetime.now().strftime("%y%m%d%H%M%S")
+    if kind:
+        return f"{username}_{kind}_{ts}"
+    return f"{username}_{ts}"
+
+
 def submit_file_job(file_path: str, no_wait: bool = False) -> int:
     """
     Submit a file as a Ray job (experimental feature).
@@ -117,15 +134,7 @@ def submit_file_job(file_path: str, no_wait: bool = False) -> int:
                 return 1
 
         # Build Ray job submit command
-        # Default submission id: {username}_{yymmddHHMMSS}
-        try:
-            username = (
-                os.environ.get("USER") or os.environ.get("LOGNAME") or getpass.getuser()
-            )
-        except Exception:
-            username = "rayuser"
-        ts = datetime.datetime.now().strftime("%y%m%d%H%M%S")
-        submission_id = f"{username}_{ts}"
+        submission_id = _generate_submission_id(interpreter)
         cmd = [
             "ray",
             "job",
@@ -164,8 +173,18 @@ def submit_file_job(file_path: str, no_wait: bool = False) -> int:
         print()
 
         # Execute the ray job submit command
-        result = subprocess.run(cmd, cwd=".")
-        return result.returncode
+        try:
+            result = subprocess.run(cmd, cwd=".")
+            return result.returncode
+        except KeyboardInterrupt:
+            # Graceful interrupt: avoid Python traceback and provide a clean line
+            print("\n⏸️ Aborted following job output.")
+            print("If the job is already up and running, you can continue following its output:")
+            print(f"🗒️    ray job logs -f {submission_id}")
+            print(f"Or stop it:")
+            print(f"🛑    ray job stop {submission_id}")
+            # 130 is conventional exit code for SIGINT
+            return 130
 
     except Exception as e:
         print(f"Error submitting job: {e}", file=sys.stderr)
@@ -204,12 +223,14 @@ def submit_shell_command(command: str) -> int:
                 return 1
 
         # Build job submit command to run via bash -lc "<command>"
+        submission_id = _generate_submission_id("cmd")
         cmd = [
             "ray",
             "job",
             "submit",
             "--entrypoint-num-cpus=1",
             working_dir_opt,
+            f"--submission-id={submission_id}",
         ]
         if entrypoint_num_gpus_arg:
             cmd.append(entrypoint_num_gpus_arg)
@@ -232,8 +253,16 @@ def submit_shell_command(command: str) -> int:
         print(f"   📋 {' '.join(cmd)}")
         print()
 
-        result = subprocess.run(cmd, cwd=".")
-        return result.returncode
+        try:
+            result = subprocess.run(cmd, cwd=".")
+            return result.returncode
+        except KeyboardInterrupt:
+            print("\n⏸️ Aborted following job output. The Ray job submission command was interrupted.")
+            print("If the job is already up and running, you can continue following its output:")
+            print(f"🗒️     ray job logs -f {submission_id}")
+            print(f"Or stop it:")
+            print(f"🛑    ray job stop {submission_id}")
+            return 130
     except Exception as e:
         print(f"Error submitting command job: {e}", file=sys.stderr)
         return 1

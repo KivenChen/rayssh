@@ -339,7 +339,7 @@ def ensure_ray_initialized(
                 configure_logging=False,  # Don't configure Python logging
                 ignore_reinit_error=True,  # Ignore reinitialization errors
             )
-            print("✅ Local Ray ready")
+            print("🌐 Ray initialized")
     except Exception as e:
         raise RuntimeError(f"Failed to initialize Ray: {e}") from e
 
