@@ -167,19 +167,19 @@ class TerminalClient:
             return
 
     async def handle_input(self):
-        """Read from stdin and send to WebSocket."""
+        """Read from stdin and send raw bytes to WebSocket (binary frames)."""
         loop = asyncio.get_event_loop()
+        import os as _os
 
         while self.running and self.websocket and not self.shutdown_requested:
             try:
-                # Read single character from stdin
-                char = await loop.run_in_executor(None, sys.stdin.read, 1)
-                if char:
-                    # Send to terminal (including control chars like \x03 for Ctrl-C)
-                    payload = {"type": "input", "data": char}
-                    if self.session_id:
-                        payload["session_id"] = self.session_id
-                    await self.websocket.send(json.dumps(payload))
+                # Read raw bytes from stdin (terminal is in raw mode)
+                data: bytes = await loop.run_in_executor(
+                    None, lambda: _os.read(sys.stdin.fileno(), 1024)
+                )
+                if data:
+                    # Send bytes directly; server will write them to PTY
+                    await self.websocket.send(data)
                 else:
                     # EOF on stdin (Ctrl-D). Do not close the session; stop reading input
                     # and let the server/output dictate when to close.

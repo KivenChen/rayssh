@@ -25,14 +25,39 @@ def configure_pty_for_signals(pty_slave_fd: int) -> bool:
         attrs = termios.tcgetattr(pty_slave_fd)
 
         # Configure for normal terminal mode with signal generation
-        attrs[3] |= termios.ISIG  # Local flags - enable signal chars
-        attrs[3] |= termios.ICANON  # Enable canonical mode for normal line editing
-        attrs[3] |= termios.ECHO  # Enable echo so you can see what you type
+        # Local flags
+        attrs[3] |= termios.ISIG   # enable signal chars
+        attrs[3] |= termios.ICANON # canonical mode for normal line editing
+        attrs[3] |= termios.ECHO   # echo so you can see what you type
+
+        # Input flags: ensure we do not strip high-bit and enable UTF-8 if available
+        try:
+            # Clear ISTRIP so 8-bit characters (UTF-8 bytes) are not stripped
+            if hasattr(termios, "ISTRIP"):
+                attrs[0] &= ~termios.ISTRIP
+            # Set IUTF8 if the platform supports it so the line discipline treats input as UTF-8
+            if hasattr(termios, "IUTF8"):
+                attrs[0] |= termios.IUTF8
+        except Exception:
+            pass
+
+        # Control flags: ensure 8-bit chars
+        try:
+            if hasattr(termios, "CS8"):
+                attrs[2] |= termios.CS8
+        except Exception:
+            pass
 
         # Set control characters
         attrs[6][termios.VINTR] = ord("\x03")  # Ctrl-C = SIGINT
         attrs[6][termios.VQUIT] = ord("\x1c")  # Ctrl-\ = SIGQUIT
         attrs[6][termios.VSUSP] = ord("\x1a")  # Ctrl-Z = SIGTSTP
+        # Make backspace and delete behave commonly
+        try:
+            if hasattr(termios, "VERASE"):
+                attrs[6][termios.VERASE] = ord("\x7f")  # DEL as erase
+        except Exception:
+            pass
 
         # Apply the settings
         termios.tcsetattr(pty_slave_fd, termios.TCSANOW, attrs)
@@ -57,6 +82,20 @@ def setup_controlling_terminal(pty_slave_fd: int) -> None:
         attrs = termios.tcgetattr(pty_slave_fd)
         # Normal mode with signals
         attrs[3] |= termios.ISIG | termios.ICANON | termios.ECHO
+        # Input flags: don't strip 8th bit; enable UTF-8 when available
+        try:
+            if hasattr(termios, "ISTRIP"):
+                attrs[0] &= ~termios.ISTRIP
+            if hasattr(termios, "IUTF8"):
+                attrs[0] |= termios.IUTF8
+        except Exception:
+            pass
+        # Control flags: ensure 8-bit chars
+        try:
+            if hasattr(termios, "CS8"):
+                attrs[2] |= termios.CS8
+        except Exception:
+            pass
         attrs[6][termios.VINTR] = ord("\x03")  # Ctrl-C = SIGINT
         attrs[6][termios.VQUIT] = ord("\x1c")  # Ctrl-\ = SIGQUIT
         attrs[6][termios.VSUSP] = ord("\x1a")  # Ctrl-Z = SIGTSTP

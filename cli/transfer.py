@@ -7,43 +7,13 @@ import os
 import sys
 import shutil
 import tempfile
-from typing import List, Dict
+import hashlib
+from typing import List
 
 import ray
 
 from utils import ensure_ray_initialized, fetch_cluster_nodes, get_head_node_id
-
-
-@ray.remote(num_cpus=0)
-def _pack_current_workdir_zip() -> Dict:
-    """Pack the current working directory into a zip and return it in chunks.
-
-    Assumes this task is started with runtime_env working_dir pointing to the
-    package URI, so os.getcwd() is the unpacked package directory.
-    """
-    import os as _os
-    import tempfile as _tempfile
-    import shutil as _shutil
-
-    cwd = _os.getcwd()
-    base_name = _os.path.basename(cwd.rstrip("/")) or "package"
-
-    tmpdir = _tempfile.mkdtemp()
-    archive_base = _os.path.join(tmpdir, base_name)
-    # Create zip of entire cwd
-    archive_path = _shutil.make_archive(archive_base, "zip", root_dir=cwd)
-
-    # Stream as chunks
-    chunks: list[bytes] = []
-    chunk_size = 8 * 1024 * 1024  # 8MB
-    with open(archive_path, "rb") as f:
-        while True:
-            data = f.read(chunk_size)
-            if not data:
-                break
-            chunks.append(data)
-
-    return {"filename": _os.path.basename(archive_path), "chunks": chunks}
+from agent.file_streamer import FileStreamerActor
 
 
 def _package_dir_and_get_gcs_uri(path: str) -> str:
@@ -124,53 +94,82 @@ def handle_pull_command(argv: List[str]) -> int:
         return 1
 
     try:
-        # Require Ray Client to run a remote packing task
-        ray_addr = os.environ.get("RAY_ADDRESS")
-        if not ray_addr:
-            print("Error: RAY_ADDRESS must be set to pull via Ray cluster", file=sys.stderr)
+        # Ensure Ray client is initialized (no local cwd upload)
+        ensure_ray_initialized(ray_address=os.environ.get("RAY_ADDRESS"), working_dir=None)
+
+        # Locate head node for placement
+        nodes, head_node_id = fetch_cluster_nodes()
+        if not head_node_id:
+            head_node_id = get_head_node_id()
+        if not head_node_id:
+            print("Error: Could not determine Ray head node", file=sys.stderr)
             return 1
 
-        # Make sure Ray Client is initialized first (no local working_dir upload here)
-        ensure_ray_initialized(ray_address=ray_addr, working_dir=None)
+        # Create a FileStreamerActor on the head node with runtime_env to unpack the package
+        streamer = FileStreamerActor.options(
+            runtime_env={"working_dir": uri},
+            scheduling_strategy=ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
+                node_id=head_node_id, soft=False
+            ),
+            lifetime="detached",
+            name=None,
+            namespace="rayssh",
+        ).remote()
 
-        # Place task on head node (soft), with runtime_env to fetch the package
+        # Prepare archive remotely
+        meta = ray.get(streamer.prepare_archive.remote())
+        size = int(meta.get("size", 0))
+        sha256 = str(meta.get("sha256", ""))
+        root_basename = meta.get("root_basename") or "package"
+
+        # Receive chunks and write to local tar.gz
+        pkg_name = os.path.splitext(os.path.basename(uri))[0]
+        local_archive = os.path.join(os.getcwd(), f"{pkg_name}.tar.gz")
+        offset = 0
+        chunk_size = 2 * 1024 * 1024
+        h = hashlib.sha256()
+        with open(local_archive, "wb") as out:
+            while offset < size:
+                to_read = min(chunk_size, size - offset)
+                data = ray.get(streamer.read_chunk.remote(offset, to_read))
+                if not data:
+                    break
+                out.write(data)
+                h.update(data)
+                offset += len(data)
+
+        # Verify hash
+        if sha256 and h.hexdigest() != sha256:
+            print("Error: SHA256 mismatch after download", file=sys.stderr)
+            try:
+                ray.get(streamer.cleanup.remote())
+            except Exception:
+                pass
+            try:
+                ray.kill(streamer)
+            except Exception:
+                pass
+            return 1
+
+        # Extract into CWD
+        import tarfile as _tarfile
+        with _tarfile.open(local_archive, "r:gz") as tf:
+            tf.extractall(os.getcwd())
+
+        # Cleanup remote archive and actor
         try:
-            nodes, head_node_id = fetch_cluster_nodes()
+            ray.get(streamer.cleanup.remote())
         except Exception:
-            nodes, head_node_id = [], None
-
-        scheduling_strategy = None
+            pass
         try:
-            if head_node_id:
-                scheduling_strategy = ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
-                    node_id=head_node_id, soft=True
-                )
+            ray.kill(streamer)
         except Exception:
-            scheduling_strategy = None
+            pass
 
-        options_kwargs = {"num_cpus": 0, "runtime_env": {"working_dir": uri}}
-        if scheduling_strategy is not None:
-            options_kwargs["scheduling_strategy"] = scheduling_strategy
-
-        obj = _pack_current_workdir_zip.options(**options_kwargs).remote()
-        result = ray.get(obj)
-        filename = result.get("filename") or os.path.basename(uri)
-        chunks = result.get("chunks") or []
-
-        # Write zip locally
-        zip_path = os.path.join(os.getcwd(), filename)
-        with open(zip_path, "wb") as wf:
-            for c in chunks:
-                wf.write(c)
-
-        # Unpack into CWD
-        try:
-            shutil.unpack_archive(zip_path, extract_dir=os.getcwd(), format="zip")
-            print("✅ Pulled and unpacked:")
-            print(f"- Zip: {zip_path}")
-        except Exception as ue:
-            print(f"⚠️  Unpack failed, leaving zip in place: {zip_path} ({ue})")
-
+        print("✅ Pulled package contents:")
+        print(f"- Source: {uri}")
+        print(f"- Saved:  {local_archive}")
+        print(f"- Extracted folder: {os.path.join(os.getcwd(), root_basename)}")
         return 0
     except Exception as e:
         print(f"Error during pull: {e}", file=sys.stderr)

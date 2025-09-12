@@ -226,6 +226,21 @@ class TerminalActor:
         # Prepare shell environment with GPU access if requested
         shell_env = os.environ.copy()
         shell_env.update({"TERM": shell_env.get("TERM", "xterm-256color")})
+
+        # Ensure UTF-8 locale so multibyte characters (e.g., Chinese) are handled correctly
+        try:
+            has_utf8 = any(
+                isinstance(shell_env.get(k), str) and "UTF-8" in shell_env.get(k)
+                for k in ["LANG", "LC_ALL", "LC_CTYPE"]
+            )
+            if not has_utf8:
+                # Prefer C.UTF-8 for broad availability
+                shell_env.setdefault("LANG", "C.UTF-8")
+                shell_env.setdefault("LC_CTYPE", "C.UTF-8")
+                shell_env.setdefault("LC_ALL", "C.UTF-8")
+        except Exception:
+            # Best-effort; ignore if environment manipulation fails
+            pass
         
         # Add GPU environment variables from daemon actor
         if gpu_env:
@@ -343,36 +358,19 @@ class TerminalActor:
                 break
 
             try:
-                # Receive message from WebSocket
+                # Receive message from WebSocket (can be binary or text-json)
                 message = await websocket.recv()
+
+                # Binary frames: raw PTY input bytes
+                if isinstance(message, (bytes, bytearray)):
+                    pty_master = session.get("pty_master")
+                    if pty_master:
+                        os.write(pty_master, bytes(message))
+                    continue
+
+                # Text frames: JSON control messages (e.g., resize)
                 data = json.loads(message)
-
-                if data.get("type") == "input":
-                    # Write to PTY
-                    input_data = data.get("data", "")
-                    if isinstance(input_data, str):
-                        # Handle Ctrl-C: first try to signal child processes,
-                        # if no children, let PTY handle it normally (for line editing)
-                        shell_process = session.get("shell_process")
-                        if ord(input_data) == 3 and shell_process:  # Ctrl-C
-                            # Try to handle via child process signaling
-                            handled = handle_ctrl_c_signal(shell_process.pid)
-                            if handled:
-                                # Signal was sent to children, don't pass Ctrl-C to PTY
-                                continue
-
-                        # Preserve control characters (e.g., Ctrl-C = \x03, Ctrl-D = \x04)
-                        pty_master = session.get("pty_master")
-                        if pty_master:
-                            os.write(
-                                pty_master, input_data.encode("latin1", errors="ignore")
-                            )
-                    else:
-                        pty_master = session.get("pty_master")
-                        if pty_master:
-                            os.write(pty_master, bytes(input_data))
-                elif data.get("type") == "resize":
-                    # Handle terminal resize
+                if data.get("type") == "resize":
                     rows = data.get("rows", 24)
                     cols = data.get("cols", 80)
                     self._resize_pty(session_id, rows, cols)
