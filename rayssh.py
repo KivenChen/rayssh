@@ -57,7 +57,7 @@ def main():
         # No arguments - connect to random worker node (local) or remote HOME
         if ray_address_env:
             working_dir = None  # No working_dir means HOME
-        else:
+            # else:
             # Cluster connection - randomly connect to a worker node
             try:
                 ensure_ray_initialized()
@@ -131,21 +131,11 @@ def main():
             return submit_file_job(argument, no_wait=False)
 
         # Check if it's a directory and RAY_ADDRESS is set
-        elif ray_address_env and os.path.exists(argument) and os.path.isdir(argument):
+        elif os.path.exists(argument) and os.path.isdir(argument):
             # It's a directory and we're in remote mode - upload and connect
             working_dir = argument
             # print(f"📁 Directory specified: {argument}")
         # Check if it's a directory but no RAY_ADDRESS
-        elif os.path.exists(argument) and os.path.isdir(argument):
-            print(
-                "Error: Directory specified but RAY_ADDRESS not set.",
-                file=sys.stderr,
-            )
-            print(
-                "Set RAY_ADDRESS to enable remote mode with directory upload.",
-                file=sys.stderr,
-            )
-            return 1
 
         # Handle node index argument (-0, -1, -2, etc.)
         elif argument.startswith("-") and argument[1:].isdigit():
@@ -215,6 +205,13 @@ def main():
             else:
                 # Fall through to node index handling
                 pass
+        else:
+            # treat it as a node argument followed by a path
+            node_arg = sys.argv[1]
+            working_dir = sys.argv[2]
+            if not os.path.exists(working_dir) or not os.path.isdir(working_dir):
+                print(f"Error: Directory '{working_dir}' not found or not a valid directory", file=sys.stderr)
+                return 1
 
     elif len(sys.argv) > 3:
         # Handle lab, code, debug, and tell-cursor commands with additional arguments (like paths)
@@ -250,43 +247,20 @@ def main():
             print_help()
             return 1
 
-    # Initialize Ray with working directory if specified
-    if ray_address_env and working_dir is not None:
-        try:
-            ensure_ray_initialized(ray_address=ray_address_env, working_dir=working_dir)
-        except Exception as e:
-            print(f"Error initializing Ray: {e}", file=sys.stderr)
-            return 1
-    elif node_arg:
-        # Cluster connection - ensure Ray is initialized without uploading local cwd
-        try:
-            import ray as _ray
-
-            if not _ray.is_initialized():
-                # Use connect_only to avoid starting a local cluster with cwd upload
-                ensure_ray_initialized(connect_only=True)
-        except Exception as e:
-            print(f"Error initializing Ray: {e}", file=sys.stderr)
-            return 1
+    try:
+        ensure_ray_initialized(ray_address=ray_address_env, working_dir=working_dir)
+    except Exception as e:
+        print(f"Error initializing Ray: {e}", file=sys.stderr)
+        return 1
 
     # Set up fallback signal handlers
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    # Create and run terminal client
-    if ray_address_env and working_dir is not None:
-        # Ray client mode with working directory - use RaySSHTerminal in remote mode
-        terminal = RaySSHTerminal(
-            None, ray_address=ray_address_env, working_dir=working_dir
-        )
-    elif ray_address_env and node_arg is None:
-        # Ray client mode without working directory and no specific node - use RaySSHTerminal in remote mode
-        terminal = RaySSHTerminal(None, ray_address=ray_address_env, working_dir=None)
-    else:
-        # Cluster connection - connect to specific node (even with RAY_ADDRESS set)
-        terminal = RaySSHTerminal(node_arg, ray_address=ray_address_env)
+    terminal = RaySSHTerminal(node_arg, ray_address=ray_address_env, working_dir=working_dir)
 
     # Persist last session info for cluster node connections
+    # If this changes, terminal will overwrite it
     try:
         if node_arg and not ray_address_env:
             os.makedirs(os.path.expanduser("~/.rayssh"), exist_ok=True)

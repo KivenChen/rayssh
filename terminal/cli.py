@@ -257,34 +257,30 @@ class RaySSHTerminal:
             # Step 2: Resolve working directory for the final target node
             session_workdir = None
             if self.working_dir:
-                if self.is_remote_mode:
-                    # In remote mode, get the Ray-managed working directory path
-                    try:
-                        # Get the GCS URI from Ray runtime context
-                        working_dir_gcs_uri = self._get_ray_working_dir_gcs_uri()
+                # In remote mode, get the Ray-managed working directory path
+                try:
+                    # Get the GCS URI from Ray runtime context
+                    working_dir_gcs_uri = self._get_ray_working_dir_gcs_uri()
+                    
+                    if working_dir_gcs_uri:
+                        # Create WorkdirActor with GCS URI to resolve Ray-managed working directory
+                        workdir_actor = WorkdirActor.options(
+                            runtime_env={"working_dir": working_dir_gcs_uri},
+                            scheduling_strategy=ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
+                                node_id=self.target_node["NodeID"], soft=False
+                            )
+                        ).remote()
                         
-                        if working_dir_gcs_uri:
-                            # Create WorkdirActor with GCS URI to resolve Ray-managed working directory
-                            workdir_actor = WorkdirActor.options(
-                                runtime_env={"working_dir": working_dir_gcs_uri},
-                                scheduling_strategy=ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
-                                    node_id=self.target_node["NodeID"], soft=False
-                                )
-                            ).remote()
-                            
-                            session_workdir = ray.get(workdir_actor.get_working_dir.remote())
-                            
-                            # Clean up the workdir actor
-                            # ray.kill(workdir_actor)
-                        else:
-                            print(f"⚠️  No GCS working directory URI found, using local path")
-                            session_workdir = os.path.abspath(self.working_dir)
+                        session_workdir = ray.get(workdir_actor.get_working_dir.remote())
                         
-                    except Exception as e:
-                        print(f"⚠️  Error resolving Ray working directory: {e}, using local path")
+                        # Clean up the workdir actor
+                        # ray.kill(workdir_actor)
+                    else:
+                        print(f"⚠️  No GCS working directory URI found, using local path")
                         session_workdir = os.path.abspath(self.working_dir)
-                else:
-                    # In local mode, use the absolute path
+                    
+                except Exception as e:
+                    print(f"⚠️  Error resolving Ray working directory: {e}, using local path")
                     session_workdir = os.path.abspath(self.working_dir)
 
             # Step 3: Start terminal actor on the final target node (only once!)

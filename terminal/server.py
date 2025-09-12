@@ -160,7 +160,9 @@ class TerminalActor:
             "pty_slave": None,
             "shell_process": None,
             "created_at": time.time(),
-            "working_dir": session_working_dir or self.default_working_dir,
+            # Only use per-session working_dir when explicitly provided by client.
+            # Otherwise, fall back to HOME later when starting PTY.
+            "working_dir": session_working_dir,
             "cuda_visible_devices": session_cuda_visible_devices,
         }
 
@@ -216,8 +218,10 @@ class TerminalActor:
         configure_pty_for_signals(pty_slave)
 
         # Start shell process
-        # Use per-session working directory, fallback to HOME
-        shell_cwd = session.get("working_dir") or os.environ.get("HOME", "/home")
+        # Use per-session working directory if provided; otherwise use HOME
+        shell_cwd = session.get("working_dir")
+        if not shell_cwd:
+            shell_cwd = os.environ.get("HOME", "~")
 
         def setup_child():
             """Set up the child process to properly handle signals."""

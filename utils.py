@@ -297,7 +297,7 @@ def ensure_ray_initialized(
         elif connect_only:
             # Connect to an existing Ray cluster without starting one
             # address="auto" will attempt to discover a running local cluster
-            print("🔌 Connecting to existing Ray cluster (auto)")
+            print("🌐 Connecting to existing Ray cluster...")
             ray.init(
                 address="auto",
                 logging_level="FATAL",
@@ -329,7 +329,7 @@ def ensure_ray_initialized(
             #     )
             # except Exception:
             #     print("🧪 Starting local Ray cluster")
-            print(f"🌐 Connecting to Ray cluster")
+            print(f"🌐 Connecting to Ray cluster...")
             ray.init(
                 runtime_env=local_runtime_env,
                 logging_level="FATAL",  # Only show fatal errors
