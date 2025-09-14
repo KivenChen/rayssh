@@ -25,6 +25,11 @@ from utils import (
     write_last_session_node_ip,
     get_ray_dashboard_info,
 )
+from ray.job_submission import JobSubmissionClient
+from .code import (
+    _install_codeserver_via_ray_client,
+    _apply_job_runtime_env_to_actor_options,
+)
 
 
 def _select_worker_node_id(allow_head_if_no_worker: bool) -> str:
@@ -80,6 +85,7 @@ def handle_debug_command(argv: List[str]) -> int:
     quick = False
     explicit_ip: Optional[str] = None
     code_path: Optional[str] = None
+    job_or_submission_id: Optional[str] = None
     # Extract non-flag tokens (order-preserving); prefer first as IP if it looks like one
     non_flags: list[str] = []
     for a in args:
@@ -94,10 +100,18 @@ def handle_debug_command(argv: List[str]) -> int:
         if _is_ip(non_flags[0]):
             explicit_ip = non_flags[0]
             if len(non_flags) >= 2:
-                code_path = non_flags[1]
+                candidate = non_flags[1]
+                if os.path.exists(candidate):
+                    code_path = candidate
+                else:
+                    job_or_submission_id = candidate
         else:
-            # No explicit IP; treat first token as potential path
-            code_path = non_flags[0]
+            # No explicit IP; interpret first token as either a local path or a job/submission id
+            candidate = non_flags[0]
+            if os.path.exists(candidate):
+                code_path = candidate
+            else:
+                job_or_submission_id = candidate
 
     # Initialize Ray first
     ray_address_env = os.environ.get("RAY_ADDRESS")
@@ -161,9 +175,9 @@ def handle_debug_command(argv: List[str]) -> int:
 
     # Get cluster info for dashboard URL from Ray context
     dashboard_info = get_ray_dashboard_info()
-    dashboard_url = dashboard_info.get('dashboard_url')
-    cluster_host = dashboard_info.get('host')
-    dashboard_port = dashboard_info.get('port')
+    dashboard_url = dashboard_info.get("dashboard_url")
+    cluster_host = dashboard_info.get("host")
+    dashboard_port = dashboard_info.get("port")
 
     print(f"🐛 Starting debug mode with Ray debugging enabled")
     if dashboard_url:
@@ -183,7 +197,17 @@ def handle_debug_command(argv: List[str]) -> int:
     except Exception:
         safe_ip = "unknown"
 
-    actor_name = f"rayssh_debug_{safe_ip}"
+    # Include job id in actor name if provided to avoid collisions
+    if job_or_submission_id:
+
+        def _sanitize(s: str) -> str:
+            return "".join(ch if (ch.isalnum() or ch in "-_.") else "-" for ch in s)[
+                :48
+            ]
+
+        actor_name = f"rayssh_debug_job_{safe_ip}_{_sanitize(job_or_submission_id)}"
+    else:
+        actor_name = f"rayssh_debug_{safe_ip}"
     try:
         # Try to reuse an existing named actor first
         try:
@@ -192,9 +216,13 @@ def handle_debug_command(argv: List[str]) -> int:
             code_actor = None
 
         # Resolve root dir for code server
-        # - With code_path: use the specified path
-        # - Without code_path: open target user's home directory
-        if code_path:
+        # Priority:
+        # - If job/submission specified: use '.' so actor uses its runtime_env working_dir
+        # - Else if code_path given: use that path (Ray Client mode will upload)
+        # - Else: default behavior
+        if job_or_submission_id:
+            root_dir = "."
+        elif code_path:
             root_dir = code_path
         else:
             root_dir = None
@@ -203,7 +231,7 @@ def handle_debug_command(argv: List[str]) -> int:
         if code_actor is None:
             # Import our custom debug-enabled CodeServerActor
             from agent.debug_code_server import DebugCodeServerActor
-            
+
             # Create a short-lived probe actor to query state on the target node
             probe_actor = DebugCodeServerActor.options(
                 namespace="rayssh",
@@ -249,7 +277,6 @@ def handle_debug_command(argv: List[str]) -> int:
                         return 1
 
                     # Install code-server via Ray Client
-                    from cli.code import _install_codeserver_via_ray_client
                     if not ray_address_env:
                         print(
                             "❌ RAY_ADDRESS is required to use Ray Client for shipping the archive",
@@ -273,6 +300,10 @@ def handle_debug_command(argv: List[str]) -> int:
                     }
                     if n_gpus is not None:
                         actor_options["num_gpus"] = n_gpus
+                    # Inherit runtime_env from job if provided (working_dir/uris/env_vars)
+                    _apply_job_runtime_env_to_actor_options(
+                        actor_options, job_or_submission_id
+                    )
                     code_actor = DebugCodeServerActor.options(**actor_options).remote()
                     print("✅ code-server installed and ready on target node")
                 else:
@@ -287,6 +318,9 @@ def handle_debug_command(argv: List[str]) -> int:
                     }
                     if n_gpus is not None:
                         actor_options["num_gpus"] = n_gpus
+                    _apply_job_runtime_env_to_actor_options(
+                        actor_options, job_or_submission_id
+                    )
                     code_actor = DebugCodeServerActor.options(**actor_options).remote()
             finally:
                 try:
@@ -296,22 +330,22 @@ def handle_debug_command(argv: List[str]) -> int:
 
         # Start code-server via the chosen actor with debug configuration
         print(f"🔧 Starting debug-enabled code-server...")
-        if root_dir:
+        if root_dir and not job_or_submission_id:
             print(f"📦 Uploading local folder `{root_dir}` to code-server...")
-        
+
         # Pass debug configuration to the actor
         debug_config = {
             "ray_dashboard_url": dashboard_url,
             "ray_dashboard_host": cluster_host,
             "ray_dashboard_port": dashboard_port,
         }
-        
-        result = ray.get(code_actor.start_debug_code.remote(
-            root_dir=root_dir, 
-            port=80,
-            debug_config=debug_config
-        ))
-        
+
+        result = ray.get(
+            code_actor.start_debug_code.remote(
+                root_dir=root_dir, port=80, debug_config=debug_config
+            )
+        )
+
         # Handle results similar to regular code command
         if not result.get("success"):
             err = str(result.get("error", ""))

@@ -210,7 +210,10 @@ def main():
             node_arg = sys.argv[1]
             working_dir = sys.argv[2]
             if not os.path.exists(working_dir) or not os.path.isdir(working_dir):
-                print(f"Error: Directory '{working_dir}' not found or not a valid directory", file=sys.stderr)
+                print(
+                    f"Error: Directory '{working_dir}' not found or not a valid directory",
+                    file=sys.stderr,
+                )
                 return 1
 
     elif len(sys.argv) > 3:
@@ -257,7 +260,9 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    terminal = RaySSHTerminal(node_arg, ray_address=ray_address_env, working_dir=working_dir)
+    terminal = RaySSHTerminal(
+        node_arg, ray_address=ray_address_env, working_dir=working_dir
+    )
 
     # Persist last session info for cluster node connections
     # If this changes, terminal will overwrite it
@@ -298,6 +303,7 @@ Usage:
     rayssh -l                       # Interactive node selection
     rayssh --ls                     # Print nodes table
     rayssh [lab|code|debug] [path]  # Launch Jupyter Lab / code-server / debug code-server on remote
+    rayssh code <job_or_submission_id>  # Launch code-server inheriting that job's runtime_env
     rayssh tell-cursor [dir]        # Create .cursorrules file for debugging guidance
     rayssh -- <command>             # Submit shell command as job
 
@@ -318,6 +324,7 @@ Examples:
     rayssh [-q] script.py           # Submit Python job and wait. "-q" for no-wait.
     rayssh lab                      # Launch Jupyter Lab on worker node
     rayssh code ./src               # Launch code-server with uploaded directory
+    rayssh code job_20240914_abc    # Launch code-server using job's runtime_env working_dir
     rayssh debug ./src              # Launch debug-enabled code-server with Ray debugging
     rayssh tell-cursor              # Create .cursorrules in current directory
     rayssh tell-cursor ./myproject  # Create .cursorrules in specific directory

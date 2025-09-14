@@ -13,6 +13,7 @@ import urllib.parse
 from typing import List, Optional
 
 import ray
+from ray.job_submission import JobSubmissionClient
 
 from agent.code_server import CodeServerActor
 from utils import (
@@ -23,6 +24,7 @@ from utils import (
     load_last_session_preferred_ip,
     find_node_by_ip,
     write_last_session_node_ip,
+    get_ray_dashboard_info,
 )
 
 
@@ -316,6 +318,36 @@ def _install_codeserver_via_ray_client(
         return False
 
 
+def _apply_job_runtime_env_to_actor_options(
+    actor_options: dict, job_or_submission_id: Optional[str]
+) -> None:
+    """If a job/submission id is provided, fetch its runtime_env via JobSubmissionClient
+    and apply working_dir/uris/env_vars to the given actor options.
+    """
+    if not job_or_submission_id:
+        return
+    try:
+        dash = get_ray_dashboard_info() or {}
+        base_url = dash.get("dashboard_url")
+        if not base_url and dash.get("host") and dash.get("port"):
+            base_url = f"http://{dash['host']}:{dash['port']}"
+        if not base_url:
+            raise RuntimeError(
+                "Ray dashboard address not found for JobSubmissionClient"
+            )
+        client = JobSubmissionClient(base_url)
+        details = client.get_job_info(job_or_submission_id)
+        actor_rt = getattr(details, "runtime_env", None) or {}
+        if actor_rt:
+            actor_options["runtime_env"] = actor_rt
+            # Keep user-facing log concise to key bits
+            print(
+                "🧩 Inheriting job runtime_env (working_dir/env_vars) for code-server"
+            )
+    except Exception as e:
+        print(f"⚠️  Failed to inherit job runtime_env: {e}", file=sys.stderr)
+
+
 def handle_code_command(argv: List[str]) -> int:
     allow_head_if_no_worker = False
     args = argv
@@ -328,6 +360,7 @@ def handle_code_command(argv: List[str]) -> int:
     quick = False
     explicit_ip: Optional[str] = None
     code_path: Optional[str] = None
+    job_or_submission_id: Optional[str] = None
     # Extract non-flag tokens (order-preserving); prefer first as IP if it looks like one
     non_flags: list[str] = []
     for a in args:
@@ -342,10 +375,18 @@ def handle_code_command(argv: List[str]) -> int:
         if _is_ip(non_flags[0]):
             explicit_ip = non_flags[0]
             if len(non_flags) >= 2:
-                code_path = non_flags[1]
+                candidate = non_flags[1]
+                if os.path.exists(candidate):
+                    code_path = candidate
+                else:
+                    job_or_submission_id = candidate
         else:
-            # No explicit IP; treat first token as potential path
-            code_path = non_flags[0]
+            # No explicit IP; interpret first token as either a local path or a job/submission id
+            candidate = non_flags[0]
+            if os.path.exists(candidate):
+                code_path = candidate
+            else:
+                job_or_submission_id = candidate
 
     # Initialize Ray first
     ray_address_env = os.environ.get("RAY_ADDRESS")
@@ -419,7 +460,17 @@ def handle_code_command(argv: List[str]) -> int:
     except Exception:
         safe_ip = "unknown"
 
-    actor_name = f"rayssh_code_{safe_ip}"
+    # Include job id in actor name if provided to avoid collisions
+    if job_or_submission_id:
+
+        def _sanitize(s: str) -> str:
+            return "".join(ch if (ch.isalnum() or ch in "-_.") else "-" for ch in s)[
+                :48
+            ]
+
+        actor_name = f"rayssh_code_job_{safe_ip}_{_sanitize(job_or_submission_id)}"
+    else:
+        actor_name = f"rayssh_code_{safe_ip}"
     try:
         # Try to reuse an existing named actor first
         try:
@@ -428,9 +479,13 @@ def handle_code_command(argv: List[str]) -> int:
             code_actor = None
 
         # Resolve root dir for code server
-        # - With code_path: use the specified path
-        # - Without code_path: open target user's home directory
-        if code_path:
+        # Priority:
+        # - If job/submission specified: use '.' so actor uses its runtime_env working_dir
+        # - Else if code_path given: use that path (Ray Client mode will upload)
+        # - Else: default behavior
+        if job_or_submission_id:
+            root_dir = "."
+        elif code_path:
             root_dir = code_path
         else:
             root_dir = None
@@ -505,6 +560,9 @@ def handle_code_command(argv: List[str]) -> int:
                     }
                     if n_gpus is not None:
                         actor_options["num_gpus"] = n_gpus
+                    _apply_job_runtime_env_to_actor_options(
+                        actor_options, job_or_submission_id
+                    )
                     code_actor = CodeServerActor.options(**actor_options).remote()
                     print("✅ code-server installed and ready on target node")
                 else:
@@ -519,6 +577,9 @@ def handle_code_command(argv: List[str]) -> int:
                     }
                     if n_gpus is not None:
                         actor_options["num_gpus"] = n_gpus
+                    _apply_job_runtime_env_to_actor_options(
+                        actor_options, job_or_submission_id
+                    )
                     code_actor = CodeServerActor.options(**actor_options).remote()
             finally:
                 try:
@@ -528,7 +589,7 @@ def handle_code_command(argv: List[str]) -> int:
 
         # Start code-server via the chosen actor
         print(f"🔧 Starting code-server...")
-        if root_dir:
+        if root_dir and not job_or_submission_id:
             print(f"📦 Uploading local folder `{root_dir}` to code-server...")
         result = ray.get(code_actor.start_code.remote(root_dir=root_dir, port=80))
         # print(f"[DEBUG] result: {result}")

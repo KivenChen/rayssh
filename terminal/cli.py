@@ -53,44 +53,48 @@ class RaySSHTerminal:
         try:
             runtime_context = ray.get_runtime_context()
             runtime_env = runtime_context.runtime_env
-            working_dir_gcs_uri = runtime_env.get('working_dir')
-            
-            if working_dir_gcs_uri and working_dir_gcs_uri.startswith('gcs://'):
+            working_dir_gcs_uri = runtime_env.get("working_dir")
+
+            if working_dir_gcs_uri and working_dir_gcs_uri.startswith("gcs://"):
                 return working_dir_gcs_uri
             else:
                 return None
         except Exception:
             return None
 
-    def _create_gpu_daemon_actor(self, n_gpus: float, session_id: str, preferred_node_id: str = None):
+    def _create_gpu_daemon_actor(
+        self, n_gpus: float, session_id: str, preferred_node_id: str = None
+    ):
         """Create GPU daemon actor with soft node affinity to preferred node."""
         try:
             # print(f"🎛️ Creating GPU daemon actor for {n_gpus} GPUs")
-            
+
             # Use soft scheduling strategy - prefer previous session's node but allow fallback
             if preferred_node_id:
-                scheduling_strategy = ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
-                    node_id=preferred_node_id, soft=True  # Soft affinity allows fallback
+                scheduling_strategy = (
+                    ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
+                        node_id=preferred_node_id,
+                        soft=True,  # Soft affinity allows fallback
+                    )
                 )
                 print(f"🎛️ Asking for {n_gpus} GPUs (last-connected node first)")
             else:
                 # No preferred node, let Ray choose any node with GPUs
                 # we use PACK to try to reduce "gpu fragmentation" on a cluster-level
                 scheduling_strategy = "PACK"  # Ray's default GPU placement
-            
+
             gpu_daemon_actor = GPUDaemonActor.options(
-                num_gpus=n_gpus,
-                scheduling_strategy=scheduling_strategy
+                num_gpus=n_gpus, scheduling_strategy=scheduling_strategy
             ).remote(session_id)
-            
+
             # Get GPU environment from daemon actor
             gpu_env = ray.get(gpu_daemon_actor.get_gpu_env.remote())
             cuda_visible_devices = gpu_env.get("CUDA_VISIBLE_DEVICES", "")
-            
+
             # print(f"✅ GPU daemon created: CUDA_VISIBLE_DEVICES={cuda_visible_devices}")
-            
+
             return gpu_daemon_actor, cuda_visible_devices
-            
+
         except Exception as e:
             print(f"❌ Failed to create GPU daemon actor: {e}")
             return None, None
@@ -222,35 +226,38 @@ class RaySSHTerminal:
             n_gpus = parse_n_gpus_from_env()
             cuda_visible_devices = None
             gpu_daemon_actor = None
-            
+
             if n_gpus is not None and n_gpus > 0:
                 # Generate session ID for GPU daemon
                 import uuid
+
                 session_id = uuid.uuid4().hex
-                
+
                 # Try to prefer the target node for GPU allocation (soft affinity)
-                preferred_node_id = self.target_node.get("NodeID") if self.target_node else None
-                
+                preferred_node_id = (
+                    self.target_node.get("NodeID") if self.target_node else None
+                )
+
                 # Create GPU daemon actor on client side
                 gpu_daemon_actor, cuda_visible_devices = self._create_gpu_daemon_actor(
                     n_gpus, session_id, preferred_node_id
                 )
-                
+
                 if gpu_daemon_actor and cuda_visible_devices:
                     # Get the actual node where GPU daemon was placed
                     try:
                         # Single call to get both node ID and IP from GPU daemon
                         gpu_node_info = ray.get(gpu_daemon_actor.get_node_info.remote())
-                        
+
                         if gpu_node_info:
                             # Update target node with GPU node info
                             self.target_node = {
                                 "NodeID": gpu_node_info["node_id"],
                                 "NodeManagerAddress": gpu_node_info["node_ip"],
-                                "Alive": True
+                                "Alive": True,
                             }
                             # print(f"🎯 Using GPU node: {gpu_node_info['node_ip']}")
-                        
+
                     except Exception as e:
                         print(f"⚠️  Could not determine GPU node location: {e}")
 
@@ -261,26 +268,32 @@ class RaySSHTerminal:
                 try:
                     # Get the GCS URI from Ray runtime context
                     working_dir_gcs_uri = self._get_ray_working_dir_gcs_uri()
-                    
+
                     if working_dir_gcs_uri:
                         # Create WorkdirActor with GCS URI to resolve Ray-managed working directory
                         workdir_actor = WorkdirActor.options(
                             runtime_env={"working_dir": working_dir_gcs_uri},
                             scheduling_strategy=ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
                                 node_id=self.target_node["NodeID"], soft=False
-                            )
+                            ),
                         ).remote()
-                        
-                        session_workdir = ray.get(workdir_actor.get_working_dir.remote())
-                        
+
+                        session_workdir = ray.get(
+                            workdir_actor.get_working_dir.remote()
+                        )
+
                         # Clean up the workdir actor
                         # ray.kill(workdir_actor)
                     else:
-                        print(f"⚠️  No GCS working directory URI found, using local path")
+                        print(
+                            f"⚠️  No GCS working directory URI found, using local path"
+                        )
                         session_workdir = os.path.abspath(self.working_dir)
-                    
+
                 except Exception as e:
-                    print(f"⚠️  Error resolving Ray working directory: {e}, using local path")
+                    print(
+                        f"⚠️  Error resolving Ray working directory: {e}, using local path"
+                    )
                     session_workdir = os.path.abspath(self.working_dir)
 
             # Step 3: Start terminal actor on the final target node (only once!)
@@ -300,13 +313,13 @@ class RaySSHTerminal:
             # Step 4: Connect to terminal
             self.client = TerminalClient()
             connection_host = server_info["ip"]
-            
+
             await self.client.connect_to_terminal(
-                connection_host, 
-                server_info["port"], 
-                working_dir=session_workdir, 
+                connection_host,
+                server_info["port"],
+                working_dir=session_workdir,
                 cuda_visible_devices=cuda_visible_devices,
-                gpu_daemon_actor=gpu_daemon_actor
+                gpu_daemon_actor=gpu_daemon_actor,
             )
 
             # Save the successfully connected IP as last session

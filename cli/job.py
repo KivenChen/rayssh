@@ -164,9 +164,7 @@ def submit_file_job(file_path: str, no_wait: bool = False) -> int:
         if runtime_env_present:
             print(f"🧩 Runtime env: ./{runtime_env_file}")
         else:
-            print(
-                f"🧩 Runtime env: remote (create runtime_env.yaml to customize)"
-            )
+            print(f"🧩 Runtime env: remote (create runtime_env.yaml to customize)")
         if gpu_str is not None:
             print(f"🎛️ GPUs: {gpu_str}")
         print(f"📋 Command: {' '.join(cmd)}")
@@ -179,10 +177,12 @@ def submit_file_job(file_path: str, no_wait: bool = False) -> int:
         except KeyboardInterrupt:
             # Graceful interrupt: avoid Python traceback and provide a clean line
             print("\n⏸️ Aborted following job output.")
-            print("If the job is already up and running, you can continue following its output:")
-            print(f"🗒️    ray job logs -f {submission_id}")
+            print(
+                "If the job is already up and running, you can continue following its output:"
+            )
+            print(f"ray job logs -f {submission_id}")
             print(f"Or stop it:")
-            print(f"🛑    ray job stop {submission_id}")
+            print(f"ray job stop {submission_id}")
             # 130 is conventional exit code for SIGINT
             return 130
 
@@ -257,11 +257,15 @@ def submit_shell_command(command: str) -> int:
             result = subprocess.run(cmd, cwd=".")
             return result.returncode
         except KeyboardInterrupt:
-            print("\n⏸️ Aborted following job output. The Ray job submission command was interrupted.")
-            print("If the job is already up and running, you can continue following its output:")
-            print(f"🗒️     ray job logs -f {submission_id}")
+            print(
+                "\n⏸️ Aborted following job output. The Ray job submission command was interrupted."
+            )
+            print(
+                "If the job is already up and running, you can continue following its output:"
+            )
+            print(f"ray job logs -f {submission_id}")
             print(f"Or stop it:")
-            print(f"🛑    ray job stop {submission_id}")
+            print(f"ray job stop {submission_id}")
             return 130
     except Exception as e:
         print(f"Error submitting command job: {e}", file=sys.stderr)

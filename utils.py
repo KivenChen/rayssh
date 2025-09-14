@@ -478,8 +478,10 @@ def fetch_cluster_nodes() -> tuple[list[Dict], Optional[str]]:
 
 # ============ Common helpers for service actors ============
 
+
 def detect_accessible_ip() -> str:
     return ray.util.get_node_ip_address()
+
 
 def _fallback_detect_accessible_ip() -> str:
     """Determine an accessible IP address without internet calls
@@ -757,43 +759,40 @@ def download_code_server_if_needed(os_name: str, arch: str) -> Optional[str]:
 def get_ray_dashboard_info() -> dict:
     """
     Extract Ray dashboard information from the Ray context.
-    
+
     Returns:
         dict: Contains 'dashboard_url', 'host', and 'port' keys if available.
               Returns empty dict if no dashboard info is available.
     """
     import ray
-    
-    dashboard_info = {
-        'dashboard_url': None,
-        'host': None,
-        'port': None
-    }
-    
+
+    dashboard_info = {"dashboard_url": None, "host": None, "port": None}
+
     try:
         # Get the Ray context which contains dashboard information
         context = ray.util.client._default_context
-        if context and hasattr(context, 'dashboard_url') and context.dashboard_url:
+        if context and hasattr(context, "dashboard_url") and context.dashboard_url:
             dashboard_url = context.dashboard_url
-            dashboard_info['dashboard_url'] = dashboard_url
-            
+            dashboard_info["dashboard_url"] = dashboard_url
+
             # Parse host and port from dashboard URL
-            if dashboard_url.startswith('http://'):
+            if dashboard_url.startswith("http://"):
                 url_part = dashboard_url[7:]  # Remove 'http://'
-                if ':' in url_part:
-                    host, port_str = url_part.split(':', 1)
-                    dashboard_info['host'] = host
+                if ":" in url_part:
+                    host, port_str = url_part.split(":", 1)
+                    dashboard_info["host"] = host
                     try:
-                        dashboard_info['port'] = int(port_str)
+                        dashboard_info["port"] = int(port_str)
                     except ValueError:
-                        dashboard_info['port'] = 8265  # Default Ray dashboard port
+                        dashboard_info["port"] = 8265  # Default Ray dashboard port
                 else:
-                    dashboard_info['host'] = url_part
-                    dashboard_info['port'] = 8265  # Default Ray dashboard port
+                    dashboard_info["host"] = url_part
+                    dashboard_info["port"] = 8265  # Default Ray dashboard port
             return dashboard_info
-            
+
         # Fallback: try to extract from RAY_ADDRESS environment variable
         import os
+
         ray_address_env = os.environ.get("RAY_ADDRESS")
         if ray_address_env and ray_address_env.startswith("ray://"):
             try:
@@ -812,16 +811,16 @@ def get_ray_dashboard_info() -> dict:
                 else:
                     host = address_part
                     dashboard_port = 8265  # Default Ray dashboard port
-                
-                dashboard_info['host'] = host
-                dashboard_info['port'] = dashboard_port
-                dashboard_info['dashboard_url'] = f"http://{host}:{dashboard_port}"
-                
+
+                dashboard_info["host"] = host
+                dashboard_info["port"] = dashboard_port
+                dashboard_info["dashboard_url"] = f"http://{host}:{dashboard_port}"
+
             except (ValueError, IndexError):
                 pass
-                
+
     except Exception as e:
         # Silently fail - caller can handle empty result
         pass
-    
+
     return dashboard_info

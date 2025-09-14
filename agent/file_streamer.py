@@ -72,5 +72,3 @@ class FileStreamerActor:
         self._archive_sha256 = None
         self._root_basename = None
         return True
-
-

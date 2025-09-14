@@ -26,9 +26,9 @@ def configure_pty_for_signals(pty_slave_fd: int) -> bool:
 
         # Configure for normal terminal mode with signal generation
         # Local flags
-        attrs[3] |= termios.ISIG   # enable signal chars
-        attrs[3] |= termios.ICANON # canonical mode for normal line editing
-        attrs[3] |= termios.ECHO   # echo so you can see what you type
+        attrs[3] |= termios.ISIG  # enable signal chars
+        attrs[3] |= termios.ICANON  # canonical mode for normal line editing
+        attrs[3] |= termios.ECHO  # echo so you can see what you type
 
         # Input flags: ensure we do not strip high-bit and enable UTF-8 if available
         try:

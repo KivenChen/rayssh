@@ -14,7 +14,7 @@ from agent.code_server import CodeServerActor
 @ray.remote(num_gpus=0)
 class DebugCodeServerActor(CodeServerActor):
     """Extended CodeServerActor with Ray debugging capabilities"""
-    
+
     def __init__(self):
         super().__init__()
         self.debug_env_vars = {
@@ -24,7 +24,12 @@ class DebugCodeServerActor(CodeServerActor):
         # Update environment with debug variables
         self.env.update(self.debug_env_vars)
 
-    def start_debug_code(self, root_dir: Optional[str] = None, port: int = 80, debug_config: Optional[Dict] = None) -> Dict:
+    def start_debug_code(
+        self,
+        root_dir: Optional[str] = None,
+        port: int = 80,
+        debug_config: Optional[Dict] = None,
+    ) -> Dict:
         """Start code-server with Ray debugging extensions and environment"""
         try:
             with self.process_lock:
@@ -96,13 +101,16 @@ class DebugCodeServerActor(CodeServerActor):
                 print("🐛 Installing Ray debugging extensions...")
                 extension_result = self._install_debug_extensions()
                 if not extension_result["success"]:
-                    print(f"⚠️  Warning: Failed to install some extensions: {extension_result['error']}")
+                    print(
+                        f"⚠️  Warning: Failed to install some extensions: {extension_result['error']}"
+                    )
 
                 # Configure Ray cluster connection if provided
-                if debug_config:
-                    cluster_result = self._configure_ray_cluster(debug_config)
-                    if not cluster_result["success"]:
-                        print(f"⚠️  Warning: Failed to configure Ray cluster: {cluster_result['error']}")
+                # TODO(kiv): find real effective settings
+                # if debug_config:
+                #     cluster_result = self._configure_ray_cluster(debug_config)
+                #     if not cluster_result["success"]:
+                #         print(f"⚠️  Warning: Failed to configure Ray cluster: {cluster_result['error']}")
 
                 # Prepare environment with debug variables
                 debug_env = self.env.copy()
@@ -121,15 +129,16 @@ class DebugCodeServerActor(CodeServerActor):
                     code_server_bin,
                     "--bind-addr",
                     f"{self.host_ip}:{self.bound_port}",
-                    "--password",
-                    self.password,
+                    # "--password",
+                    # self.password,
                     "--disable-telemetry",
                     "--disable-update-check",
-                    "--disable-workspace-trust",
                     launch_root,
                 ]
 
-                print(f"🔧 Starting debug code-server on {self.host_ip}:{self.bound_port}")
+                print(
+                    f"🔧 Starting debug code-server on {self.host_ip}:{self.bound_port}"
+                )
                 print(f"🐛 Debug environment: RAY_DEBUG=1, RAY_POST_MORTEM_DEBUG=1")
 
                 with open(self.log_file_path, "w") as log_file:
@@ -193,7 +202,7 @@ class DebugCodeServerActor(CodeServerActor):
                         capture_output=True,
                         text=True,
                         timeout=60,  # 60 second timeout
-                        env=self.env
+                        env=self.env,
                     )
                     if result.returncode != 0:
                         print(f"⚠️  Failed to install {ext_id}: {result.stderr}")
@@ -210,7 +219,7 @@ class DebugCodeServerActor(CodeServerActor):
             if failed_extensions:
                 return {
                     "success": False,
-                    "error": f"Failed to install extensions: {', '.join(failed_extensions)}"
+                    "error": f"Failed to install extensions: {', '.join(failed_extensions)}",
                 }
             else:
                 return {"success": True}
@@ -226,7 +235,7 @@ class DebugCodeServerActor(CodeServerActor):
             dashboard_url = debug_config.get("ray_dashboard_url")
             ray_host = debug_config.get("ray_dashboard_host")
             ray_port = debug_config.get("ray_dashboard_port")
-            
+
             if dashboard_url:
                 print(f"🔗 Ray cluster configured: {dashboard_url}")
             elif ray_host and ray_port:
@@ -237,10 +246,10 @@ class DebugCodeServerActor(CodeServerActor):
             # Set environment variables for Ray debugging
             if dashboard_url:
                 # Extract host and port from full URL for environment variables
-                if dashboard_url.startswith('http://'):
+                if dashboard_url.startswith("http://"):
                     url_part = dashboard_url[7:]  # Remove 'http://'
-                    if ':' in url_part:
-                        host, port_str = url_part.split(':', 1)
+                    if ":" in url_part:
+                        host, port_str = url_part.split(":", 1)
                         self.env["RAY_DASHBOARD_HOST"] = host
                         self.env["RAY_DASHBOARD_PORT"] = port_str
                     else:
@@ -252,14 +261,25 @@ class DebugCodeServerActor(CodeServerActor):
             else:
                 self.env["RAY_DASHBOARD_HOST"] = ray_host
                 self.env["RAY_DASHBOARD_PORT"] = str(ray_port)
-            
+
+            # Also set RAY_ADDRESS if not already set, inferring client port from dashboard port
+            try:
+                host = self.env.get("RAY_DASHBOARD_HOST") or "localhost"
+                dash_port = int(self.env.get("RAY_DASHBOARD_PORT") or 8265)
+                # Common mapping: client 10001 <-> dashboard 8265; otherwise, inverse +/- 1736
+                client_port = 10001 if dash_port == 8265 else (dash_port + 1736)
+                if not self.env.get("RAY_ADDRESS"):
+                    self.env["RAY_ADDRESS"] = f"ray://{host}:{client_port}"
+            except Exception:
+                pass
+
             # In a real implementation, you might want to:
             # 1. Create .vscode/settings.json in the workspace
             # 2. Configure Python debugger to connect to Ray cluster
             # 3. Set up Ray-specific debugging configurations
-            
+
             return {"success": True}
-            
+
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -269,20 +289,17 @@ class DebugCodeServerActor(CodeServerActor):
         rayssh_bin = os.path.expanduser("~/.rayssh/bin/code-server")
         if os.path.isfile(rayssh_bin) and os.access(rayssh_bin, os.X_OK):
             return rayssh_bin
-        
+
         # Check system PATH
         try:
             result = subprocess.run(
-                ["which", "code-server"],
-                capture_output=True,
-                text=True,
-                env=self.env
+                ["which", "code-server"], capture_output=True, text=True, env=self.env
             )
             if result.returncode == 0:
                 return result.stdout.strip()
         except:
             pass
-        
+
         return None
 
     def get_debug_info(self) -> Dict:
@@ -293,5 +310,7 @@ class DebugCodeServerActor(CodeServerActor):
             info["debug_env_vars"] = self.debug_env_vars
             # Add Ray dashboard information if available
             if "RAY_DASHBOARD_HOST" in self.env and "RAY_DASHBOARD_PORT" in self.env:
-                info["ray_dashboard_url"] = f"http://{self.env['RAY_DASHBOARD_HOST']}:{self.env['RAY_DASHBOARD_PORT']}"
+                info["ray_dashboard_url"] = (
+                    f"http://{self.env['RAY_DASHBOARD_HOST']}:{self.env['RAY_DASHBOARD_PORT']}"
+                )
         return info

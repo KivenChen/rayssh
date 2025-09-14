@@ -26,14 +26,18 @@ def _package_dir_and_get_gcs_uri(path: str) -> str:
         raise ValueError("_package_dir_and_get_gcs_uri expects a directory")
 
     # Initialize Ray Client with working_dir
-    ensure_ray_initialized(ray_address=os.environ.get("RAY_ADDRESS"), working_dir=abs_path)
+    ensure_ray_initialized(
+        ray_address=os.environ.get("RAY_ADDRESS"), working_dir=abs_path
+    )
 
     # Get runtime env to fetch the uploaded package URI
     ctx = ray.get_runtime_context()
     re = ctx.runtime_env
     uri = re.get("working_dir")
     if not uri or not str(uri).startswith("gcs://"):
-        raise RuntimeError("Could not obtain gcs:// working_dir package URI from Ray context")
+        raise RuntimeError(
+            "Could not obtain gcs:// working_dir package URI from Ray context"
+        )
     return uri
 
 
@@ -80,22 +84,30 @@ def handle_pull_command(argv: List[str]) -> int:
         args = argv[1:]
 
     if not args:
-        print("Usage: rayssh pull <gcs://_ray_pkg_xxx.zip>\n"
-        "You can get a gcs://_ray_pkg_xxx.zip URI by:\n"
-        "1. Uploading content using 'rayssh push <path>' command\n"
-        "2. Inspecting on Ray dashboard any rayssh / Ray operations that involves uploading a working dir, click its `runtime environment` link and find the working_dir URI\n", file=sys.stderr)
+        print(
+            "Usage: rayssh pull <gcs://_ray_pkg_xxx.zip>\n"
+            "You can get a gcs://_ray_pkg_xxx.zip URI by:\n"
+            "1. Uploading content using 'rayssh push <path>' command\n"
+            "2. Inspecting on Ray dashboard any rayssh / Ray operations that involves uploading a working dir, click its `runtime environment` link and find the working_dir URI\n",
+            file=sys.stderr,
+        )
         return 1
 
     uri = args[0]
     if not (uri.startswith("gcs://") and uri.endswith(".zip")):
-        print("Error: pull expects a gcs://_ray_pkg_xxx.zip URI. You can get a gcs://_ray_pkg_xxx.zip URI by:\n"
-        "1. Uploading file/dir using 'rayssh push <path>' command\n"
-        "2. Inspecting on Ray dashboard any previous rayssh / Ray operations that involves uploading a working dir, click its `runtime environment` link and find the working_dir URI\n", file=sys.stderr)
+        print(
+            "Error: pull expects a gcs://_ray_pkg_xxx.zip URI. You can get a gcs://_ray_pkg_xxx.zip URI by:\n"
+            "1. Uploading file/dir using 'rayssh push <path>' command\n"
+            "2. Inspecting on Ray dashboard any previous rayssh / Ray operations that involves uploading a working dir, click its `runtime environment` link and find the working_dir URI\n",
+            file=sys.stderr,
+        )
         return 1
 
     try:
         # Ensure Ray client is initialized (no local cwd upload)
-        ensure_ray_initialized(ray_address=os.environ.get("RAY_ADDRESS"), working_dir=None)
+        ensure_ray_initialized(
+            ray_address=os.environ.get("RAY_ADDRESS"), working_dir=None
+        )
 
         # Locate head node for placement
         nodes, head_node_id = fetch_cluster_nodes()
@@ -153,6 +165,7 @@ def handle_pull_command(argv: List[str]) -> int:
 
         # Extract into CWD
         import tarfile as _tarfile
+
         with _tarfile.open(local_archive, "r:gz") as tf:
             tf.extractall(os.getcwd())
 
@@ -174,5 +187,3 @@ def handle_pull_command(argv: List[str]) -> int:
     except Exception as e:
         print(f"Error during pull: {e}", file=sys.stderr)
         return 1
-
-
