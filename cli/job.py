@@ -243,8 +243,8 @@ def submit_shell_command(command: str) -> int:
         if runtime_env_file:
             cmd.append(f"--runtime-env={runtime_env_file}")
 
-        # Properly quote the command for bash -lc
-        cmd += ["--", "bash", "-lc", shlex.quote(command)]
+        # Pass the command directly to bash -lc (already reconstructed by caller)
+        cmd += ["--", "bash", "-lc", command]
 
         print(f"🚀 RaySSH: Submitting command job")
         print(f"   💬 {command}")
