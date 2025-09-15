@@ -172,7 +172,7 @@ def submit_file_job(file_path: str, no_wait: bool = False) -> int:
 
         # Execute the ray job submit command
         try:
-            result = subprocess.run(cmd, cwd=".")
+            result = subprocess.run(cmd, cwd=".", env=os.environ)
             return result.returncode
         except KeyboardInterrupt:
             # Graceful interrupt: avoid Python traceback and provide a clean line
