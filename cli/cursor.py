@@ -11,10 +11,10 @@ from typing import List
 def handle_tell_cursor_command(argv: List[str]) -> int:
     """
     Handle the 'tell-cursor' command that creates a .cursorrules file.
-    
+
     Args:
         argv: Command line arguments
-        
+
     Returns:
         Exit code (0 for success, 1 for error)
     """
@@ -22,7 +22,7 @@ def handle_tell_cursor_command(argv: List[str]) -> int:
     args = argv
     if len(argv) >= 1 and argv[0] == "tell-cursor":
         args = argv[1:]
-    
+
     # Determine target directory (current directory by default)
     target_dir = "."
     if len(args) >= 1:
@@ -33,9 +33,9 @@ def handle_tell_cursor_command(argv: List[str]) -> int:
         if not os.path.isdir(target_dir):
             print(f"Error: '{target_dir}' is not a directory", file=sys.stderr)
             return 1
-    
+
     # Create the .cursorrules file content
-    cursorrules_content = '''# 🚀 RaySSH Debug Rules for Cursor
+    cursorrules_content = """# 🚀 RaySSH Debug Rules for Cursor
 
 ## Debugging This Project
 
@@ -80,15 +80,15 @@ This project uses Ray for distributed computing. Simply running code locally won
 🎯 **Always start with `rayssh .` before attempting to debug!**
 
 Without this, you'll be debugging in the wrong environment and things won't work as expected.
-'''
+"""
 
     # Write the .cursorrules file
     cursorrules_path = os.path.join(target_dir, ".cursorrules")
-    
+
     try:
         with open(cursorrules_path, "w", encoding="utf-8") as f:
             f.write(cursorrules_content)
-        
+
         abs_path = os.path.abspath(cursorrules_path)
         print("🎯 Cursor has been informed!")
         print(f"📝 Created .cursorrules file: {abs_path}")
@@ -97,9 +97,9 @@ Without this, you'll be debugging in the wrong environment and things won't work
         print("   💫 rayssh .")
         print()
         print("🤖 Your AI assistant will be much smarter about Ray debugging!")
-        
+
         return 0
-        
+
     except Exception as e:
         print(f"Error creating .cursorrules file: {e}", file=sys.stderr)
-        return 1 
+        return 1
