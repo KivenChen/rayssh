@@ -320,12 +320,12 @@ def _install_codeserver_via_ray_client(
 
 def _apply_job_runtime_env_to_actor_options(
     actor_options: dict, job_or_submission_id: Optional[str]
-) -> None:
+) -> dict:
     """If a job/submission id is provided, fetch its runtime_env via JobSubmissionClient
     and apply working_dir/uris/env_vars to the given actor options.
     """
     if not job_or_submission_id:
-        return
+        return {"success": True}
     try:
         dash = get_ray_dashboard_info() or {}
         base_url = dash.get("dashboard_url")
@@ -335,8 +335,21 @@ def _apply_job_runtime_env_to_actor_options(
             raise RuntimeError(
                 "Ray dashboard address not found for JobSubmissionClient"
             )
-        client = JobSubmissionClient(base_url)
-        details = client.get_job_info(job_or_submission_id)
+        print("💼 job_or_submission_id:", job_or_submission_id)
+        # Ensure RAY_ADDRESS does not override our explicit dashboard base_url
+        original_ray_address = os.environ.get("RAY_ADDRESS")
+        temporarily_cleared = False
+        try:
+            if original_ray_address and isinstance(base_url, str) and base_url.startswith("http"):
+                temporarily_cleared = True
+                del os.environ["RAY_ADDRESS"]
+            client = JobSubmissionClient(base_url)
+            details = client.get_job_info(job_or_submission_id)
+        finally:
+            if temporarily_cleared and original_ray_address is not None:
+                os.environ["RAY_ADDRESS"] = original_ray_address
+        if not details:
+            return {"success": False, "error": "Job/submission not found"}
         actor_rt = getattr(details, "runtime_env", None) or {}
         if actor_rt:
             actor_options["runtime_env"] = actor_rt
@@ -344,8 +357,10 @@ def _apply_job_runtime_env_to_actor_options(
             print(
                 "🧩 Inheriting job runtime_env (working_dir/env_vars) for code-server"
             )
+        return {"success": True, "runtime_env": actor_rt}
     except Exception as e:
         print(f"⚠️  Failed to inherit job runtime_env: {e}", file=sys.stderr)
+        return {"success": False, "error": str(e)}
 
 
 def handle_code_command(argv: List[str]) -> int:

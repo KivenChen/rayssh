@@ -11,6 +11,11 @@ import json
 
 import ray
 
+# Stores the most recent return value from ray.init(), for extracting web UI info
+_LAST_RAY_ADDRESS_INFO: Optional[dict] = None
+# Stores the most recent known dashboard URL (e.g., ClientContext.dashboard_url)
+_LAST_RAY_DASHBOARD_URL: Optional[str] = None
+
 
 def parse_n_gpus_from_env() -> Optional[float]:
     """Parse n_gpus from environment variables (supports 'n_gpus' or 'N_GPUS').
@@ -223,6 +228,7 @@ def ensure_ray_initialized(
     If connect_only is True, do not start a new local cluster. Attempt to connect
     to an existing cluster (local or remote) and raise if none is available.
     """
+    global _LAST_RAY_ADDRESS_INFO, _LAST_RAY_DASHBOARD_URL
     if ray.is_initialized():
         return
     try:
@@ -282,7 +288,37 @@ def ensure_ray_initialized(
                 except Exception:
                     print("📦 Uploading working dir")
             try:
-                ray.init(**init_kwargs)
+                addr_info = ray.init(**init_kwargs)
+                # Capture address_info and dashboard_url if available
+                try:
+                    info_dict = None
+                    if isinstance(addr_info, dict):
+                        info_dict = addr_info
+                    else:
+                        dash = getattr(addr_info, "dashboard_url", None)
+                        if dash:
+                            _LAST_RAY_DASHBOARD_URL = dash
+                        info_dict = getattr(addr_info, "address_info", None)
+                    if info_dict and isinstance(info_dict, dict):
+                        _LAST_RAY_ADDRESS_INFO = info_dict
+                except Exception:
+                    pass
+                # Derive dashboard URL if still unknown
+                try:
+                    if not _LAST_RAY_DASHBOARD_URL:
+                        addr_part = ray_address.split("://", 1)[1]
+                        host, port_str = (
+                            addr_part.rsplit(":", 1)
+                            if ":" in addr_part
+                            else (addr_part, "10001")
+                        )
+                        client_port = int(port_str)
+                        dashboard_port = 8265 if client_port == 10001 else max(1, client_port - 1736)
+                        _LAST_RAY_DASHBOARD_URL = f"{host}:{dashboard_port}"
+                        if not _LAST_RAY_ADDRESS_INFO:
+                            _LAST_RAY_ADDRESS_INFO = {"webui_url": _LAST_RAY_DASHBOARD_URL, "address": ray_address}
+                except Exception:
+                    pass
                 # print("🔗 Connected to Ray")
             except Exception as e:
                 msg = str(e)
@@ -292,13 +328,36 @@ def ensure_ray_initialized(
                     or "Ray Client is already connected" in msg
                 ):
                     print("ℹ️ Ray Client already connected; continuing")
+                    # Capture from existing client context if available
+                    try:
+                        ctx = ray.util.client._default_context
+                        if ctx and getattr(ctx, "dashboard_url", None):
+                            _LAST_RAY_DASHBOARD_URL = ctx.dashboard_url
+                    except Exception:
+                        pass
+                    # Ensure we have best-effort values from env
+                    try:
+                        if ray_address and not _LAST_RAY_DASHBOARD_URL:
+                            addr_part = ray_address.split("://", 1)[1]
+                            host, port_str = (
+                                addr_part.rsplit(":", 1)
+                                if ":" in addr_part
+                                else (addr_part, "10001")
+                            )
+                            client_port = int(port_str)
+                            dashboard_port = 8265 if client_port == 10001 else max(1, client_port - 1736)
+                            _LAST_RAY_DASHBOARD_URL = f"{host}:{dashboard_port}"
+                            if not _LAST_RAY_ADDRESS_INFO:
+                                _LAST_RAY_ADDRESS_INFO = {"webui_url": _LAST_RAY_DASHBOARD_URL, "address": ray_address}
+                    except Exception:
+                        pass
                     return
                 raise
         elif connect_only:
             # Connect to an existing Ray cluster without starting one
             # address="auto" will attempt to discover a running local cluster
             print("🌐 Connecting to existing Ray cluster...")
-            ray.init(
+            addr_info = ray.init(
                 address="auto",
                 logging_level="FATAL",
                 log_to_driver=False,
@@ -306,6 +365,11 @@ def ensure_ray_initialized(
                 configure_logging=False,
                 ignore_reinit_error=True,
             )
+            try:
+                if isinstance(addr_info, dict):
+                    _LAST_RAY_ADDRESS_INFO = addr_info
+            except Exception:
+                pass
             # print("🔗 Connected to Ray")
         else:
             # Local Ray cluster (may start one if none exists)
@@ -330,7 +394,7 @@ def ensure_ray_initialized(
             # except Exception:
             #     print("🧪 Starting local Ray cluster")
             print(f"🌐 Connecting to Ray cluster...")
-            ray.init(
+            addr_info = ray.init(
                 runtime_env=local_runtime_env,
                 logging_level="FATAL",  # Only show fatal errors
                 log_to_driver=False,  # Don't send raylet logs to driver
@@ -339,6 +403,11 @@ def ensure_ray_initialized(
                 configure_logging=False,  # Don't configure Python logging
                 ignore_reinit_error=True,  # Ignore reinitialization errors
             )
+            try:
+                if isinstance(addr_info, dict):
+                    _LAST_RAY_ADDRESS_INFO = addr_info
+            except Exception:
+                pass
             print("🌐 Ray initialized")
     except Exception as e:
         raise RuntimeError(f"Failed to initialize Ray: {e}") from e
@@ -768,27 +837,56 @@ def get_ray_dashboard_info() -> dict:
 
     dashboard_info = {"dashboard_url": None, "host": None, "port": None}
 
+    # Prefer the dashboard URL obtained from ensure_ray_initialized()
+    try:
+        global _LAST_RAY_ADDRESS_INFO, _LAST_RAY_DASHBOARD_URL
+        dash = _LAST_RAY_DASHBOARD_URL
+        if not dash and isinstance(_LAST_RAY_ADDRESS_INFO, dict):
+            dash = _LAST_RAY_ADDRESS_INFO.get("webui_url") or (
+                (_LAST_RAY_ADDRESS_INFO.get("address_info") or {}).get("webui_url")
+                if isinstance(_LAST_RAY_ADDRESS_INFO.get("address_info"), dict)
+                else None
+            )
+        if dash:
+            url = dash if dash.startswith("http://") or dash.startswith("https://") else f"http://{dash}"
+            dashboard_info["dashboard_url"] = url
+            try:
+                without_proto = url.split("://", 1)[1]
+                host, port_str = (
+                    without_proto.split(":", 1) if ":" in without_proto else (without_proto, "8265")
+                )
+                dashboard_info["host"] = host
+                dashboard_info["port"] = int(port_str)
+            except Exception:
+                pass
+            return dashboard_info
+    except Exception:
+        pass
+
     try:
         # Get the Ray context which contains dashboard information
         context = ray.util.client._default_context
         if context and hasattr(context, "dashboard_url") and context.dashboard_url:
             dashboard_url = context.dashboard_url
-            dashboard_info["dashboard_url"] = dashboard_url
+            dashboard_info["dashboard_url"] = (
+                dashboard_url if dashboard_url.startswith("http://") else f"http://{dashboard_url}"
+            )
 
             # Parse host and port from dashboard URL
-            if dashboard_url.startswith("http://"):
-                url_part = dashboard_url[7:]  # Remove 'http://'
-                if ":" in url_part:
-                    host, port_str = url_part.split(":", 1)
-                    dashboard_info["host"] = host
-                    try:
-                        dashboard_info["port"] = int(port_str)
-                    except ValueError:
-                        dashboard_info["port"] = 8265  # Default Ray dashboard port
-                else:
-                    dashboard_info["host"] = url_part
+            url_part = dashboard_info["dashboard_url"].split("://", 1)[1]
+            if ":" in url_part:
+                host, port_str = url_part.split(":", 1)
+                dashboard_info["host"] = host
+                try:
+                    dashboard_info["port"] = int(port_str)
+                except ValueError:
                     dashboard_info["port"] = 8265  # Default Ray dashboard port
+            else:
+                dashboard_info["host"] = url_part
+                dashboard_info["port"] = 8265  # Default Ray dashboard port
             return dashboard_info
+
+        # Do not call ray.init() here to avoid double-init warnings in Ray Client mode
 
         # Fallback: try to extract from RAY_ADDRESS environment variable
         import os
