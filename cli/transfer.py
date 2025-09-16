@@ -134,9 +134,11 @@ def handle_pull_command(argv: List[str]) -> int:
         sha256 = str(meta.get("sha256", ""))
         root_basename = meta.get("root_basename") or "package"
 
-        # Receive chunks and write to local tar.gz
+        # Receive chunks and write archive under tmp (not current directory)
         pkg_name = os.path.splitext(os.path.basename(uri))[0]
-        local_archive = os.path.join(os.getcwd(), f"{pkg_name}.tar.gz")
+        tmp_dir = os.path.expanduser("~/.rayssh/tmp")
+        os.makedirs(tmp_dir, exist_ok=True)
+        local_archive = os.path.join(tmp_dir, f"{pkg_name}.tar.gz")
         offset = 0
         chunk_size = 2 * 1024 * 1024
         h = hashlib.sha256()
@@ -163,7 +165,7 @@ def handle_pull_command(argv: List[str]) -> int:
                 pass
             return 1
 
-        # Extract into CWD
+        # Extract into current working directory
         import tarfile as _tarfile
 
         with _tarfile.open(local_archive, "r:gz") as tf:
@@ -181,7 +183,7 @@ def handle_pull_command(argv: List[str]) -> int:
 
         print("✅ Pulled package contents:")
         print(f"- Source: {uri}")
-        print(f"- Saved:  {local_archive}")
+        print(f"- Saved archive:  {local_archive}")
         print(f"- Extracted folder: {os.path.join(os.getcwd(), root_basename)}")
         return 0
     except Exception as e:
