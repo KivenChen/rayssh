@@ -7,6 +7,7 @@ import os
 import getpass
 import datetime
 import subprocess
+import shutil
 import sys
 
 from utils import ensure_ray_initialized
@@ -105,6 +106,7 @@ def submit_file_job(file_path: str, no_wait: bool = False) -> int:
             cmd.insert(cmd.index("--"), "--no-wait")
 
         orchestrator_path = None
+        orchestrator_temp_created = False
         if n_nodes is None:
             # Legacy: single process execution inside one Ray job
             cmd.extend([interpreter, file_path])
@@ -124,20 +126,25 @@ def submit_file_job(file_path: str, no_wait: bool = False) -> int:
             # Default master port if not provided in env
             master_port_env = get_master_port_default()
 
-            # Use the real orchestrator script shipped with rayssh
+            # Copy orchestrator into user's working directory as a dotfile so it ships with working_dir
             try:
-                import importlib
-
-                orch_spec = orchestrator_module.__spec__
-                if orch_spec and getattr(orch_spec, "origin", None):
-                    orchestrator_path = orch_spec.origin
-                else:
-                    # Fallback: relative to current working dir
-                    orchestrator_path = os.path.join(
-                        ".", "cli", "torchrun_orchestrator.py"
-                    )
+                src_path = getattr(orchestrator_module, "__file__", None)
+                if not src_path:
+                    orch_spec = getattr(orchestrator_module, "__spec__", None)
+                    src_path = getattr(orch_spec, "origin", None) if orch_spec else None
+                if not src_path or not os.path.isfile(src_path):
+                    print("Error locating orchestrator script file", file=sys.stderr)
+                    return 1
+                orchestrator_path = os.path.join(".", ".rayssh_runner.py")
+                # If a user already has this file, reuse it and do NOT overwrite
+                if not os.path.exists(orchestrator_path):
+                    try:
+                        shutil.copy2(src_path, orchestrator_path)
+                    except Exception:
+                        shutil.copyfile(src_path, orchestrator_path)
+                    orchestrator_temp_created = True
             except Exception as e:
-                print(f"Error locating orchestrator script: {e}", file=sys.stderr)
+                print(f"Error preparing orchestrator script: {e}", file=sys.stderr)
                 return 1
 
             # Build entrypoint for orchestrator as a file path
@@ -200,8 +207,16 @@ def submit_file_job(file_path: str, no_wait: bool = False) -> int:
             # 130 is conventional exit code for SIGINT
             return 130
         finally:
-            # Keep orchestrator file for clarity in Ray Dashboard (no cleanup)
-            pass
+            # Cleanup temporary orchestrator file if we created it
+            try:
+                if (
+                    orchestrator_temp_created
+                    and orchestrator_path
+                    and os.path.exists(orchestrator_path)
+                ):
+                    os.remove(orchestrator_path)
+            except Exception:
+                pass
 
     except Exception as e:
         print(f"Error submitting job: {e}", file=sys.stderr)
