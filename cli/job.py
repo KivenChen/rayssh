@@ -18,7 +18,7 @@ from .job_utils import (
     parse_per_node_gpus_for_multinode,
     get_master_port_default,
 )
-from .torchrun_orchestrator import ORCHESTRATOR_SCRIPT
+from . import torchrun_orchestrator as orchestrator_module
 
 
 def _generate_submission_id(kind: str | None = None) -> str:
@@ -104,6 +104,7 @@ def submit_file_job(file_path: str, no_wait: bool = False) -> int:
             # Insert no-wait just before entrypoint
             cmd.insert(cmd.index("--"), "--no-wait")
 
+        orchestrator_path = None
         if n_nodes is None:
             # Legacy: single process execution inside one Ray job
             cmd.extend([interpreter, file_path])
@@ -123,14 +124,27 @@ def submit_file_job(file_path: str, no_wait: bool = False) -> int:
             # Default master port if not provided in env
             master_port_env = get_master_port_default()
 
-            orchestrator_script = ORCHESTRATOR_SCRIPT
+            # Use the real orchestrator script shipped with rayssh
+            try:
+                import importlib
 
-            # Build entrypoint for orchestrator
+                orch_spec = orchestrator_module.__spec__
+                if orch_spec and getattr(orch_spec, "origin", None):
+                    orchestrator_path = orch_spec.origin
+                else:
+                    # Fallback: relative to current working dir
+                    orchestrator_path = os.path.join(
+                        ".", "cli", "torchrun_orchestrator.py"
+                    )
+            except Exception as e:
+                print(f"Error locating orchestrator script: {e}", file=sys.stderr)
+                return 1
+
+            # Build entrypoint for orchestrator as a file path
             cmd.extend(
                 [
                     "python",
-                    "-c",
-                    orchestrator_script,
+                    orchestrator_path,
                     str(n_nodes),
                     interpreter,
                     file_path,
@@ -148,19 +162,20 @@ def submit_file_job(file_path: str, no_wait: bool = False) -> int:
             )
         print(f"📦 Working dir: .")
         if runtime_env_present:
-            print(f"🧩 Runtime env: ./{runtime_env_file}")
+            print(f"🧩 Runtime env specified: ./{runtime_env_file}")
         else:
             print(f"🧩 Runtime env: remote (create runtime_env.yaml to customize)")
         if n_nodes is None:
             if gpu_str is not None:
-                print(f"🎛️ GPUs: {gpu_str}")
+                print(f"🎛️ GPUs request: {gpu_str}")
+            else:
+                print(f"⚠️ GPUs request: None, default to 0")
         else:
-            if per_node_gpu_env is not None or gpu_env is not None:
-                print(
-                    f"🎛️ GPUs per node: {per_node_gpu_str if 'per_node_gpu_str' in locals() and per_node_gpu_str else '0'}"
-                )
             print(
-                f"🔌 Torchrun envs: N_NODES, NODE_RANK, MASTER_ADDRESS, MASTER_PORT={os.environ.get('MASTER_PORT') or '29500'}"
+                f"🎛️ GPUs per node: {per_node_gpu_str if 'per_node_gpu_str' in locals() and per_node_gpu_str else '0'}"
+            )
+            print(
+                f"🔌 Torchrun-like env setup: N_NODES, NODE_RANK, MASTER_ADDRESS, MASTER_PORT={get_master_port_default()}"
             )
         print(f"📋 Command: {' '.join(cmd)}")
         print()
@@ -171,15 +186,22 @@ def submit_file_job(file_path: str, no_wait: bool = False) -> int:
             return result.returncode
         except KeyboardInterrupt:
             # Graceful interrupt: avoid Python traceback and provide a clean line
-            print("\n⏸️ Aborted following job output.")
+            BOLD = "\033[1m"
+            DIM = "\033[2m"
+            YELLOW = "\033[33m"
+            RESET = "\033[0m"
+            print(f"\n{BOLD}⏸️  Aborted following job output.{RESET}")
             print(
-                "If the job is already up and running, you can continue following its output:"
+                f"{DIM}Tip:{RESET} {YELLOW}Follow logs{RESET} with: {BOLD}ray job logs -f {submission_id}{RESET}"
             )
-            print(f"ray job logs -f {submission_id}")
-            print(f"Or stop it:")
-            print(f"ray job stop {submission_id}")
+            print(
+                f"{DIM}Tip:{RESET} {YELLOW}Stop job{RESET} with:   {BOLD}ray job stop {submission_id}{RESET}"
+            )
             # 130 is conventional exit code for SIGINT
             return 130
+        finally:
+            # Keep orchestrator file for clarity in Ray Dashboard (no cleanup)
+            pass
 
     except Exception as e:
         print(f"Error submitting job: {e}", file=sys.stderr)
@@ -252,15 +274,19 @@ def submit_shell_command(command: str) -> int:
             result = subprocess.run(cmd, cwd=".")
             return result.returncode
         except KeyboardInterrupt:
+            BOLD = "\033[1m"
+            DIM = "\033[2m"
+            YELLOW = "\033[33m"
+            RESET = "\033[0m"
             print(
-                "\n⏸️ Aborted following job output. The Ray job submission command was interrupted."
+                f"\n{BOLD}⏸️  Aborted following job output.{RESET} The Ray job submission command was interrupted."
             )
             print(
-                "If the job is already up and running, you can continue following its output:"
+                f"{DIM}Tip:{RESET} {YELLOW}Follow logs{RESET} with: {BOLD}ray job logs -f {submission_id}{RESET}"
             )
-            print(f"ray job logs -f {submission_id}")
-            print(f"Or stop it:")
-            print(f"ray job stop {submission_id}")
+            print(
+                f"{DIM}Tip:{RESET} {YELLOW}Stop job{RESET} with:   {BOLD}ray job stop {submission_id}{RESET}"
+            )
             return 130
     except Exception as e:
         print(f"Error submitting command job: {e}", file=sys.stderr)

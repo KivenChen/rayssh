@@ -1,73 +1,111 @@
-ORCHESTRATOR_SCRIPT = (
-    "import os, sys, socket, subprocess, ray\n"
-    "def get_ip():\n"
-    "    try:\n"
-    "        return socket.gethostbyname(socket.gethostname())\n"
-    "    except Exception:\n"
-    "        return os.environ.get('NODE_IP', '127.0.0.1')\n"
-    "@ray.remote\n"
-    "class Runner:\n"
-    "    def get_ip(self):\n"
-    "        return get_ip()\n"
-    "    def run(self, cmd, extra_env):\n"
-    "        env = os.environ.copy()\n"
-    "        env.update({k: str(v) for k, v in extra_env.items()})\n"
-    "        try:\n"
-    "            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)\n"
-    "            assert proc.stdout is not None\n"
-    "            for line in proc.stdout:\n"
-    "                try:\n"
-    "                    print(line, end='')\n"
-    "                except Exception:\n"
-    "                    pass\n"
-    "            return proc.wait()\n"
-    "        except Exception as e:\n"
-    "            print(f'Runner error: {e}', file=sys.stderr)\n"
-    "            return 1\n"
-    "def main():\n"
-    "    n_nodes = int(sys.argv[1])\n"
-    "    interpreter = sys.argv[2]\n"
-    "    file_path = sys.argv[3]\n"
-    "    per_node_gpus_arg = sys.argv[4] if len(sys.argv) > 4 else None\n"
-    "    master_port = int(sys.argv[5]) if len(sys.argv) > 5 else 29500\n"
-    "    ray.init(address='auto')\n"
-    "    alive = [n for n in ray.nodes() if n.get('Alive')]\n"
-    "    if len(alive) < n_nodes:\n"
-    "        print(f'Required nodes: {n_nodes}, but only {len(alive)} alive.', file=sys.stderr)\n"
-    "        sys.exit(1)\n"
-    "    targets = alive[:n_nodes]\n"
-    "    from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy\n"
-    "    actor_opts = {}\n"
-    "    if per_node_gpus_arg and per_node_gpus_arg != '':\n"
-    "        try:\n"
-    "            g = float(per_node_gpus_arg)\n"
-    "            if g > 0:\n"
-    "                actor_opts['num_gpus'] = g\n"
-    "        except Exception:\n"
-    "            pass\n"
-    "    # Create first actor to determine master address\n"
-    "    first = targets[0]\n"
-    "    a0 = Runner.options(scheduling_strategy=NodeAffinitySchedulingStrategy(node_id=first.get('NodeID'), soft=False), **actor_opts).remote()\n"
-    "    master_address = ray.get(a0.get_ip.remote())\n"
-    "    actors = [a0]\n"
-    "    # Create remaining actors\n"
-    "    for t in targets[1:]:\n"
-    "        a = Runner.options(scheduling_strategy=NodeAffinitySchedulingStrategy(node_id=t.get('NodeID'), soft=False), **actor_opts).remote()\n"
-    "        actors.append(a)\n"
-    "    # Launch runs\n"
-    "    futures = []\n"
-    "    for rank, actor in enumerate(actors):\n"
-    "        envmap = {\n"
-    "            'N_NODES': n_nodes,\n"
-    "            'NODE_RANK': rank,\n"
-    "            'MASTER_ADDRESS': master_address,\n"
-    "            'MASTER_PORT': master_port,\n"
-    "        }\n"
-    "        cmd = [interpreter, file_path]\n"
-    "        futures.append(actor.run.remote(cmd, envmap))\n"
-    "    rets = ray.get(futures)\n"
-    "    rc = 0 if all(r == 0 for r in rets) else 1\n"
-    "    sys.exit(rc)\n"
-    "if __name__ == '__main__':\n"
-    "    main()\n"
+import os
+import sys
+import subprocess
+
+import ray
+from ray.util import get_node_ip_address
+from ray.util.placement_group import (
+    placement_group,
+    remove_placement_group,
 )
+from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
+
+
+@ray.remote
+class Runner:
+    def get_ip(self):
+        return get_node_ip_address()
+
+    def run(self, cmd, extra_env, rank):
+        env = os.environ.copy()
+        env.update({k: str(v) for k, v in extra_env.items()})
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                env=env,
+            )
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                try:
+                    print(f"[node {rank}] {line}", end="")
+                except Exception:
+                    pass
+            return proc.wait()
+        except Exception as e:
+            print(f"[node {rank}] Runner error: {e}", file=sys.stderr)
+            return 1
+
+
+def main():
+    n_nodes = int(sys.argv[1])
+    interpreter = sys.argv[2]
+    file_path = sys.argv[3]
+    per_node_gpus_arg = sys.argv[4] if len(sys.argv) > 4 else None
+    master_port = int(sys.argv[5]) if len(sys.argv) > 5 else 29500
+
+    ray.init(address="auto")
+
+    # Determine per-node GPU requirement
+    g = 0.0
+    if per_node_gpus_arg and per_node_gpus_arg != "":
+        g = max(0.0, float(per_node_gpus_arg))
+
+    # Build STRICT_SPREAD placement group with one bundle per node
+    bundles = []
+    for _ in range(n_nodes):
+        b = {"CPU": 1}
+        if g > 0:
+            b["GPU"] = g
+        bundles.append(b)
+    pg = placement_group(bundles, strategy="STRICT_SPREAD")
+    ray.get(pg.ready())
+
+    # Create actors per bundle
+    actor_opts = {}
+    if g > 0:
+        actor_opts["num_gpus"] = g
+    actors = []
+    for i in range(n_nodes):
+        strat = PlacementGroupSchedulingStrategy(
+            placement_group=pg,
+            placement_group_bundle_index=i,
+            placement_group_capture_child_tasks=False,
+        )
+        a = Runner.options(scheduling_strategy=strat, **actor_opts).remote()
+        actors.append(a)
+
+    # First actor determines master address
+    master_address = ray.get(actors[0].get_ip.remote())
+
+    # Launch processes on each actor
+    futures = []
+    for rank, actor in enumerate(actors):
+        envmap = {
+            "N_NODES": n_nodes,
+            "NODE_RANK": rank,
+            "MASTER_ADDRESS": master_address,
+            "MASTER_PORT": master_port,
+        }
+        cmd = [interpreter, file_path]
+        futures.append(actor.run.remote(cmd, envmap, rank))
+
+    # Collect results incrementally without timeouts using ray.wait
+    pending = list(futures)
+    results = []
+    while pending:
+        done, pending = ray.wait(pending, num_returns=1)
+        results.extend(ray.get(done))
+
+    rc = 0 if all(r == 0 for r in results) else 1
+    try:
+        remove_placement_group(pg)
+    except Exception:
+        pass
+    sys.exit(rc)
+
+
+if __name__ == "__main__":
+    main()

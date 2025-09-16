@@ -139,4 +139,4 @@ def parse_per_node_gpus_for_multinode() -> tuple[Optional[str], Optional[str]]:
 
 
 def get_master_port_default() -> str:
-    return os.environ.get("MASTER_PORT") or "29500"
+    return os.environ.get("MASTER_PORT") or os.environ.get("master_port") or "29500"
