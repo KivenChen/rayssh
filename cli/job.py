@@ -6,11 +6,19 @@ Job submission utilities for RaySSH CLI.
 import os
 import getpass
 import datetime
-import shlex
 import subprocess
 import sys
 
 from utils import ensure_ray_initialized
+from .job_utils import (
+    validate_and_detect_interpreter,
+    get_runtime_env_options,
+    parse_n_nodes_from_env,
+    parse_job_entrypoint_gpus,
+    parse_per_node_gpus_for_multinode,
+    get_master_port_default,
+)
+from .torchrun_orchestrator import ORCHESTRATOR_SCRIPT
 
 
 def _generate_submission_id(kind: str | None = None) -> str:
@@ -45,92 +53,32 @@ def submit_file_job(file_path: str, no_wait: bool = False) -> int:
         # Ensure Ray is initialized
         ensure_ray_initialized()
 
-        # Validate file path restrictions
-        if not os.path.exists(file_path):
-            print(f"Error: File '{file_path}' not found", file=sys.stderr)
+        # Validate and detect interpreter
+        interpreter, err = validate_and_detect_interpreter(file_path)
+        if err:
+            print(err, file=sys.stderr)
             return 1
-
-        # Check if file is within current working directory
-        abs_file_path = os.path.abspath(file_path)
-        abs_cwd = os.path.abspath(".")
-
-        if not abs_file_path.startswith(abs_cwd):
-            print(
-                "Error: File must be within current working directory (experimental restriction)",
-                file=sys.stderr,
-            )
-            return 1
-
-        # Check if it's a text file (not binary)
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                f.read(1024)  # Read first 1KB to check if it's text
-        except UnicodeDecodeError:
-            print(
-                "Error: Binary files are not supported (experimental restriction)",
-                file=sys.stderr,
-            )
-            return 1
-
-        # Determine the interpreter based on file extension
-        file_extension = os.path.splitext(file_path)[1].lower()
-        if file_extension == ".py":
-            interpreter = "python"
-        elif file_extension in [".sh", ".bash"]:
-            interpreter = "bash"
-        else:
-            # Try to detect shebang
-            try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    first_line = f.readline().strip()
-                    if first_line.startswith("#!"):
-                        if "python" in first_line:
-                            interpreter = "python"
-                        elif "bash" in first_line or "sh" in first_line:
-                            interpreter = "bash"
-                        else:
-                            print(
-                                "Error: Unsupported interpreter in shebang. Only Python and Bash are supported.",
-                                file=sys.stderr,
-                            )
-                            return 1
-                    else:
-                        print(
-                            "Error: Cannot determine interpreter. Use .py or .sh/.bash extension, or add shebang.",
-                            file=sys.stderr,
-                        )
-                        return 1
-            except Exception as e:
-                print(f"Error reading file: {e}", file=sys.stderr)
-                return 1
 
         # Prepare working dir and runtime env options
-        working_dir_opt = "--working-dir=."
-        runtime_env_candidates = ["runtime_env.yaml", "runtime_env.yml"]
-        runtime_env_file = next(
-            (f for f in runtime_env_candidates if os.path.isfile(f)), None
+        working_dir_opt, runtime_env_file, runtime_env_present = (
+            get_runtime_env_options()
         )
-        runtime_env_present = runtime_env_file is not None
 
-        # Parse GPUs from environment variable (supports 'n_gpus' or 'N_GPUS')
-        gpu_env = os.environ.get("n_gpus") or os.environ.get("N_GPUS")
+        # Parse n_nodes for torchrun-like multi-node execution (only for file jobs)
+        try:
+            n_nodes = parse_n_nodes_from_env()
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            return 1
+
+        # Parse GPU envs
         entrypoint_num_gpus_arg = None
         gpu_str = None
-        if gpu_env is not None and gpu_env != "":
+        if n_nodes is None:
             try:
-                gpu_count = float(gpu_env)
-                if gpu_count < 0:
-                    raise ValueError
-                # Use integer formatting if whole number, else keep float
-                gpu_str = (
-                    str(int(gpu_count)) if gpu_count.is_integer() else str(gpu_count)
-                )
-                entrypoint_num_gpus_arg = f"--entrypoint-num-gpus={gpu_str}"
-            except Exception:
-                print(
-                    f"Error: Invalid n_gpus value '{gpu_env}'. Must be a number >= 0.",
-                    file=sys.stderr,
-                )
+                entrypoint_num_gpus_arg, gpu_str = parse_job_entrypoint_gpus()
+            except ValueError as e:
+                print(str(e), file=sys.stderr)
                 return 1
 
         # Build Ray job submit command
@@ -156,17 +104,64 @@ def submit_file_job(file_path: str, no_wait: bool = False) -> int:
             # Insert no-wait just before entrypoint
             cmd.insert(cmd.index("--"), "--no-wait")
 
-        cmd.extend([interpreter, file_path])
+        if n_nodes is None:
+            # Legacy: single process execution inside one Ray job
+            cmd.extend([interpreter, file_path])
+        else:
+            # Multi-node orchestrator: one actor per node, passing torchrun-like envs
+            # Determine per-node GPU setting
+            per_node_gpu_str = None
+            warn_msg = None
+            try:
+                per_node_gpu_str, warn_msg = parse_per_node_gpus_for_multinode()
+            except ValueError as e:
+                print(str(e), file=sys.stderr)
+                return 1
+            if warn_msg:
+                print(f"⚠️  {warn_msg}", file=sys.stderr)
+
+            # Default master port if not provided in env
+            master_port_env = get_master_port_default()
+
+            orchestrator_script = ORCHESTRATOR_SCRIPT
+
+            # Build entrypoint for orchestrator
+            cmd.extend(
+                [
+                    "python",
+                    "-c",
+                    orchestrator_script,
+                    str(n_nodes),
+                    interpreter,
+                    file_path,
+                    per_node_gpu_str or "",
+                    str(master_port_env),
+                ]
+            )
 
         # Print concise context
-        print(f"🚀 RaySSH: Submitting {interpreter} job: {file_path}")
+        if n_nodes is None:
+            print(f"🚀 RaySSH: Submitting {interpreter} job: {file_path}")
+        else:
+            print(
+                f"🚀 RaySSH: Submitting multi-node {interpreter} job: {file_path} (nodes={n_nodes})"
+            )
         print(f"📦 Working dir: .")
         if runtime_env_present:
             print(f"🧩 Runtime env: ./{runtime_env_file}")
         else:
             print(f"🧩 Runtime env: remote (create runtime_env.yaml to customize)")
-        if gpu_str is not None:
-            print(f"🎛️ GPUs: {gpu_str}")
+        if n_nodes is None:
+            if gpu_str is not None:
+                print(f"🎛️ GPUs: {gpu_str}")
+        else:
+            if per_node_gpu_env is not None or gpu_env is not None:
+                print(
+                    f"🎛️ GPUs per node: {per_node_gpu_str if 'per_node_gpu_str' in locals() and per_node_gpu_str else '0'}"
+                )
+            print(
+                f"🔌 Torchrun envs: N_NODES, NODE_RANK, MASTER_ADDRESS, MASTER_PORT={os.environ.get('MASTER_PORT') or '29500'}"
+            )
         print(f"📋 Command: {' '.join(cmd)}")
         print()
 

@@ -340,7 +340,11 @@ def _apply_job_runtime_env_to_actor_options(
         original_ray_address = os.environ.get("RAY_ADDRESS")
         temporarily_cleared = False
         try:
-            if original_ray_address and isinstance(base_url, str) and base_url.startswith("http"):
+            if (
+                original_ray_address
+                and isinstance(base_url, str)
+                and base_url.startswith("http")
+            ):
                 temporarily_cleared = True
                 del os.environ["RAY_ADDRESS"]
             client = JobSubmissionClient(base_url)

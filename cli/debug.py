@@ -117,9 +117,15 @@ def handle_debug_command(argv: List[str]) -> int:
     ray_address_env = os.environ.get("RAY_ADDRESS")
     try:
         # Helper to resolve Ray-managed working_dir (gcs://...) on the target node
-        def _resolve_workdir_on_target_node(wd_uri: str, target_node_id: str) -> Optional[str]:
+        def _resolve_workdir_on_target_node(
+            wd_uri: str, target_node_id: str
+        ) -> Optional[str]:
             try:
-                if not wd_uri or not isinstance(wd_uri, str) or not wd_uri.startswith("gcs://"):
+                if (
+                    not wd_uri
+                    or not isinstance(wd_uri, str)
+                    or not wd_uri.startswith("gcs://")
+                ):
                     return None
                 from terminal.server import WorkdirActor
 
@@ -132,6 +138,7 @@ def handle_debug_command(argv: List[str]) -> int:
                 return ray.get(actor.get_working_dir.remote())
             except Exception:
                 return None
+
         if ray_address_env:
             # Only upload working_dir if user explicitly specified a path
             if code_path:
@@ -413,21 +420,27 @@ def handle_debug_command(argv: List[str]) -> int:
             else:
                 print(f"❌ Failed to start debug code-server: {err}", file=sys.stderr)
                 # Print extra diagnostics if present
-                attempted_cmd = result.get("attempted_cmd") if isinstance(result, dict) else None
+                attempted_cmd = (
+                    result.get("attempted_cmd") if isinstance(result, dict) else None
+                )
                 if attempted_cmd:
                     print(f"   🧪 Command: {attempted_cmd}")
                 if result.get("port") and result.get("host_ip"):
                     print(f"   📍 Target: {result.get('host_ip')}:{result.get('port')}")
                 if result.get("root_dir"):
                     print(f"   📁 Root: {result.get('root_dir')}")
-                log_path = result.get("log_file") or (info.get("log_file") if info else None)
+                log_path = result.get("log_file") or (
+                    info.get("log_file") if info else None
+                )
                 if log_path:
                     print(f"   📝 Log: {log_path}")
                     try:
                         # Tail last chunk of the log to surface immediate errors
                         st = os.stat(log_path)
                         start_off = max(0, st.st_size - 8192)
-                        chunk = ray.get(code_actor.read_log_chunk.remote(start_off, 8192))
+                        chunk = ray.get(
+                            code_actor.read_log_chunk.remote(start_off, 8192)
+                        )
                         data = (chunk or {}).get("data", "").rstrip()
                         if data:
                             print("   ── Log tail ──")

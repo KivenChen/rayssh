@@ -313,10 +313,15 @@ def ensure_ray_initialized(
                             else (addr_part, "10001")
                         )
                         client_port = int(port_str)
-                        dashboard_port = 8265 if client_port == 10001 else max(1, client_port - 1736)
+                        dashboard_port = (
+                            8265 if client_port == 10001 else max(1, client_port - 1736)
+                        )
                         _LAST_RAY_DASHBOARD_URL = f"{host}:{dashboard_port}"
                         if not _LAST_RAY_ADDRESS_INFO:
-                            _LAST_RAY_ADDRESS_INFO = {"webui_url": _LAST_RAY_DASHBOARD_URL, "address": ray_address}
+                            _LAST_RAY_ADDRESS_INFO = {
+                                "webui_url": _LAST_RAY_DASHBOARD_URL,
+                                "address": ray_address,
+                            }
                 except Exception:
                     pass
                 # print("🔗 Connected to Ray")
@@ -345,10 +350,17 @@ def ensure_ray_initialized(
                                 else (addr_part, "10001")
                             )
                             client_port = int(port_str)
-                            dashboard_port = 8265 if client_port == 10001 else max(1, client_port - 1736)
+                            dashboard_port = (
+                                8265
+                                if client_port == 10001
+                                else max(1, client_port - 1736)
+                            )
                             _LAST_RAY_DASHBOARD_URL = f"{host}:{dashboard_port}"
                             if not _LAST_RAY_ADDRESS_INFO:
-                                _LAST_RAY_ADDRESS_INFO = {"webui_url": _LAST_RAY_DASHBOARD_URL, "address": ray_address}
+                                _LAST_RAY_ADDRESS_INFO = {
+                                    "webui_url": _LAST_RAY_DASHBOARD_URL,
+                                    "address": ray_address,
+                                }
                     except Exception:
                         pass
                     return
@@ -848,12 +860,18 @@ def get_ray_dashboard_info() -> dict:
                 else None
             )
         if dash:
-            url = dash if dash.startswith("http://") or dash.startswith("https://") else f"http://{dash}"
+            url = (
+                dash
+                if dash.startswith("http://") or dash.startswith("https://")
+                else f"http://{dash}"
+            )
             dashboard_info["dashboard_url"] = url
             try:
                 without_proto = url.split("://", 1)[1]
                 host, port_str = (
-                    without_proto.split(":", 1) if ":" in without_proto else (without_proto, "8265")
+                    without_proto.split(":", 1)
+                    if ":" in without_proto
+                    else (without_proto, "8265")
                 )
                 dashboard_info["host"] = host
                 dashboard_info["port"] = int(port_str)
@@ -869,7 +887,9 @@ def get_ray_dashboard_info() -> dict:
         if context and hasattr(context, "dashboard_url") and context.dashboard_url:
             dashboard_url = context.dashboard_url
             dashboard_info["dashboard_url"] = (
-                dashboard_url if dashboard_url.startswith("http://") else f"http://{dashboard_url}"
+                dashboard_url
+                if dashboard_url.startswith("http://")
+                else f"http://{dashboard_url}"
             )
 
             # Parse host and port from dashboard URL
