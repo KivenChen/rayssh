@@ -9,7 +9,6 @@ import json
 import os
 from typing import Iterable, List, Optional, Set, Tuple
 
-import websockets
 from watchfiles import awatch, Change
 
 
@@ -20,34 +19,40 @@ DEFAULT_IGNORES: Tuple[str, ...] = (
     "node_modules",
     ".DS_Store",
     ".ipynb_checkpoints",
+    ".cache",
+    ".vscode",
+    ".idea",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".mypy_cache",
 )
 
 
 class SyncClient:
-    def __init__(self, local_root: str):
+    def __init__(self, local_root: str, websocket=None, session_id=None):
         self.local_root = os.path.abspath(local_root)
-        self.websocket = None
+        self.websocket = websocket
+        self.session_id = session_id
         self.running = False
         self.shutdown_requested = False
+        self._external_websocket = websocket is not None
 
-    async def connect(self, host: str, port: int) -> None:
+    async def connect(self, host: str = None, port: int = None) -> None:
+        # If using external websocket, no setup needed
+        if self._external_websocket:
+            return
+
+        # Original connection logic for standalone use
+        if not host or not port:
+            raise ValueError("host and port required when not using external websocket")
+
+        import websockets
+
         uri = f"ws://{host}:{port}/sync"
         self.websocket = await websockets.connect(
             uri, ping_interval=20, ping_timeout=10
         )
-        await self._send_json(
-            {
-                "type": "sync_hello",
-                "version": 1,
-                "root_rel": ".",
-                "options": {"max_size_bytes": 1024 * 1024},
-            }
-        )
-        try:
-            ready = await asyncio.wait_for(self.websocket.recv(), timeout=3.0)
-            _ = json.loads(ready)
-        except Exception:
-            pass
+        # Note: No hello message needed when using session-based routing
 
     def _is_ignored(self, path: str) -> bool:
         rel = os.path.relpath(path, self.local_root)
@@ -98,6 +103,9 @@ class SyncClient:
     async def _send_json(self, obj: dict) -> None:
         if not self.websocket:
             return
+        # Add session_id to all sync messages when available
+        if self.session_id:
+            obj["session_id"] = self.session_id
         await self.websocket.send(json.dumps(obj))
 
     async def _send_file_put(self, full_path: str) -> None:
@@ -139,8 +147,10 @@ class SyncClient:
             return
         await self._send_json({"type": "sync_move", "src": src_rel, "dst": dst_rel})
 
-    async def run(self, host: str, port: int) -> None:
-        await self.connect(host, port)
+    async def run(self, host: str = None, port: int = None) -> None:
+        if not self._external_websocket:
+            await self.connect(host, port)
+
         self.running = True
         try:
             async for changes in awatch(self.local_root, stop_event=None, debounce=300):
@@ -176,9 +186,14 @@ class SyncClient:
     async def cleanup(self) -> None:
         self.running = False
         self.shutdown_requested = True
-        if self.websocket:
+
+        # Only close websocket if we own it (not external)
+        if self.websocket and not self._external_websocket:
             try:
                 await self.websocket.close()
             except Exception:
                 pass
+            self.websocket = None
+        elif self._external_websocket:
+            # For external websocket, just clear our reference
             self.websocket = None

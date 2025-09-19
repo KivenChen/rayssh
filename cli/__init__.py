@@ -17,6 +17,7 @@ from .debug import handle_debug_command
 from .job import submit_shell_command
 from .cursor import handle_tell_cursor_command
 from .transfer import handle_push_command, handle_pull_command
+from .sync import handle_sync_command
 
 __all__ = [
     "get_ordered_nodes",
@@ -32,4 +33,5 @@ __all__ = [
     "handle_tell_cursor_command",
     "handle_push_command",
     "handle_pull_command",
+    "handle_sync_command",
 ]

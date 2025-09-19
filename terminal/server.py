@@ -18,7 +18,7 @@ import ray
 import websockets
 from websockets.server import serve
 
-from utils import detect_accessible_ip
+from utils import detect_accessible_ip, get_sync_editor_warning_message
 from .utils import (
     configure_pty_for_signals,
     setup_controlling_terminal,
@@ -132,6 +132,7 @@ class TerminalActor:
         session_id = None
         session_working_dir = None
         session_cuda_visible_devices = None
+        session_sync_enabled = False
 
         if path:
             try:
@@ -153,6 +154,11 @@ class TerminalActor:
                     cuda_devices_list = query_params.get("cuda_visible_devices", [])
                     if cuda_devices_list and cuda_devices_list[0]:
                         session_cuda_visible_devices = cuda_devices_list[0]
+
+                    # Extract sync_enabled flag
+                    sync_enabled_list = query_params.get("sync_enabled", [])
+                    if sync_enabled_list and sync_enabled_list[0] == "true":
+                        session_sync_enabled = True
             except Exception as e:
                 print(f"Warning: Could not parse WebSocket path '{path}': {e}")
 
@@ -171,6 +177,7 @@ class TerminalActor:
             # Otherwise, fall back to HOME later when starting PTY.
             "working_dir": session_working_dir,
             "cuda_visible_devices": session_cuda_visible_devices,
+            "sync_enabled": session_sync_enabled,
         }
 
         self.sessions[session_id] = session
@@ -265,8 +272,20 @@ class TerminalActor:
         if gpu_env:
             shell_env.update(gpu_env)
 
+        # Determine shell command - use wrapper for sync sessions
+        session = self.sessions[session_id]
+        if session.get("sync_enabled", False):
+            # Create and use shell wrapper for sync sessions
+            shell_wrapper_path = self._create_sync_shell_wrapper(session_id)
+            shell_command = [shell_wrapper_path]
+            session["shell_wrapper_path"] = shell_wrapper_path
+            print(f"🔄 Starting sync session with editor warnings enabled")
+        else:
+            # Normal shell for regular sessions
+            shell_command = [os.environ.get("SHELL", "/bin/bash")]
+
         shell_process = subprocess.Popen(
-            [os.environ.get("SHELL", "/bin/bash")],
+            shell_command,
             stdin=pty_slave,
             stdout=pty_slave,
             stderr=pty_slave,
@@ -311,6 +330,14 @@ class TerminalActor:
                     pass
 
         # GPU daemon actor is managed by the client, no cleanup needed here
+
+        # Clean up shell wrapper script if it exists
+        shell_wrapper_path = session.get("shell_wrapper_path")
+        if shell_wrapper_path:
+            try:
+                os.unlink(shell_wrapper_path)
+            except Exception:
+                pass
 
         # Close PTY
         pty_master = session.get("pty_master")
@@ -387,12 +414,20 @@ class TerminalActor:
                         os.write(pty_master, bytes(message))
                     continue
 
-                # Text frames: JSON control messages (e.g., resize)
+                # Text frames: JSON control messages (e.g., resize, sync)
                 data = json.loads(message)
-                if data.get("type") == "resize":
+                message_type = data.get("type")
+
+                if message_type == "resize":
                     rows = data.get("rows", 24)
                     cols = data.get("cols", 80)
                     self._resize_pty(session_id, rows, cols)
+                elif message_type == "sync_put":
+                    await self._handle_sync_put(session_id, data)
+                elif message_type == "sync_del":
+                    await self._handle_sync_del(session_id, data)
+                elif message_type == "sync_move":
+                    await self._handle_sync_move(session_id, data)
 
             except websockets.exceptions.ConnectionClosed:
                 # Client disconnected; this session ends but server keeps running
@@ -425,6 +460,232 @@ class TerminalActor:
 
         except Exception as e:
             print(f"Error resizing PTY: {e}")
+
+    def _create_sync_shell_wrapper(self, session_id: str) -> str:
+        """Create a temporary shell wrapper script for sync sessions with editor aliases."""
+        import tempfile
+        import stat
+
+        # Create temporary shell script
+        wrapper_fd, wrapper_path = tempfile.mkstemp(
+            suffix=".sh", prefix=f"rayssh_sync_{session_id}_"
+        )
+
+        # Get the user's shell
+        user_shell = os.environ.get("SHELL", "/bin/bash")
+
+        # Get the warning message from utils
+        warning_message = get_sync_editor_warning_message()
+
+        # Shell wrapper content with improved warnings
+        wrapper_content = f"""#!/bin/bash
+
+# RaySSH Sync Session - Editor Aliases
+show_sync_warning() {{
+    echo '{warning_message}'
+    read
+}}
+
+vim() {{
+    show_sync_warning
+    command vim "$@"
+}}
+
+vi() {{
+    show_sync_warning
+    command vi "$@"
+}}
+
+nano() {{
+    show_sync_warning
+    command nano "$@"
+}}
+
+emacs() {{
+    show_sync_warning
+    command emacs "$@"
+}}
+
+# Start the user's actual shell
+exec {user_shell} "$@"
+"""
+
+        # Write the wrapper script
+        with os.fdopen(wrapper_fd, "w") as f:
+            f.write(wrapper_content)
+
+        # Make it executable
+        os.chmod(wrapper_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IROTH)
+
+        return wrapper_path
+
+    def _validate_sync_session(
+        self, session_id: str, data: dict, operation: str
+    ) -> bool:
+        """Validate session ID matches for sync operations."""
+        msg_session_id = data.get("session_id")
+        if msg_session_id and msg_session_id != session_id:
+            print(
+                f"Warning: Session ID mismatch in {operation}: {msg_session_id} != {session_id}"
+            )
+            return False
+        return True
+
+    def _get_session_base_dir(self, session_id: str, operation: str) -> str:
+        """Get the base directory for a session, with error handling."""
+        session = self.sessions.get(session_id)
+        if not session:
+            print(f"Error: Session {session_id} not found for {operation}")
+            return None
+        return session.get("working_dir") or os.getcwd()
+
+    def _resolve_and_validate_path(
+        self, base_dir: str, relpath: str, operation: str
+    ) -> str:
+        """Resolve relative path and validate it's within base directory."""
+        if not relpath:
+            print(f"Error: {operation} missing relpath")
+            return None
+
+        full_path = os.path.join(base_dir, relpath)
+        full_path = os.path.abspath(full_path)
+        base_dir = os.path.abspath(base_dir)
+
+        if not full_path.startswith(base_dir):
+            print(f"Error: {operation} path outside working directory: {relpath}")
+            return None
+
+        return full_path
+
+    def _ensure_parent_directory(self, full_path: str):
+        """Create parent directories if they don't exist."""
+        parent_dir = os.path.dirname(full_path)
+        if parent_dir and not os.path.exists(parent_dir):
+            os.makedirs(parent_dir, exist_ok=True)
+
+    async def _handle_sync_put(self, session_id: str, data: dict):
+        """Handle sync_put message - create or update a file."""
+        try:
+            # Validate session and get paths
+            if not self._validate_sync_session(session_id, data, "sync_put"):
+                return
+
+            base_dir = self._get_session_base_dir(session_id, "sync_put")
+            if not base_dir:
+                return
+
+            relpath = data.get("relpath")
+            full_path = self._resolve_and_validate_path(base_dir, relpath, "sync_put")
+            if not full_path:
+                return
+
+            # Create parent directories if needed
+            self._ensure_parent_directory(full_path)
+
+            # Decode and write content
+            content = data.get("content", "")
+            encoding = data.get("encoding", "base64")
+
+            if encoding == "base64":
+                import base64
+
+                file_data = base64.b64decode(content.encode("ascii"))
+            else:
+                file_data = content.encode("utf-8")
+
+            with open(full_path, "wb") as f:
+                f.write(file_data)
+
+            # Set file mode if provided
+            mode = data.get("mode")
+            if mode:
+                try:
+                    os.chmod(full_path, int(mode, 8))
+                except Exception as e:
+                    print(f"Warning: Could not set file mode {mode}: {e}")
+
+            print(f"📁 Sync: Updated {relpath} ({len(file_data)} bytes)")
+
+        except Exception as e:
+            print(f"Error handling sync_put: {e}")
+
+    async def _handle_sync_del(self, session_id: str, data: dict):
+        """Handle sync_del message - delete a file."""
+        try:
+            # Validate session and get paths
+            if not self._validate_sync_session(session_id, data, "sync_del"):
+                return
+
+            base_dir = self._get_session_base_dir(session_id, "sync_del")
+            if not base_dir:
+                return
+
+            relpath = data.get("relpath")
+            full_path = self._resolve_and_validate_path(base_dir, relpath, "sync_del")
+            if not full_path:
+                return
+
+            # Delete file if it exists
+            if os.path.exists(full_path):
+                if os.path.isfile(full_path):
+                    os.remove(full_path)
+                    print(f"📁 Sync: Deleted {relpath}")
+                elif os.path.isdir(full_path):
+                    # For directories, only delete if empty (safety)
+                    try:
+                        os.rmdir(full_path)
+                        print(f"📁 Sync: Deleted directory {relpath}")
+                    except OSError:
+                        print(f"Warning: Directory not empty, skipping: {relpath}")
+                else:
+                    print(f"Warning: Unknown file type, skipping: {relpath}")
+            else:
+                print(f"📁 Sync: File already deleted: {relpath}")
+
+        except Exception as e:
+            print(f"Error handling sync_del: {e}")
+
+    async def _handle_sync_move(self, session_id: str, data: dict):
+        """Handle sync_move message - move/rename a file."""
+        try:
+            # Validate session and get base directory
+            if not self._validate_sync_session(session_id, data, "sync_move"):
+                return
+
+            base_dir = self._get_session_base_dir(session_id, "sync_move")
+            if not base_dir:
+                return
+
+            # Validate both source and destination paths
+            src_relpath = data.get("src")
+            dst_relpath = data.get("dst")
+
+            if not src_relpath or not dst_relpath:
+                print("Error: sync_move missing src or dst")
+                return
+
+            src_full_path = self._resolve_and_validate_path(
+                base_dir, src_relpath, "sync_move"
+            )
+            dst_full_path = self._resolve_and_validate_path(
+                base_dir, dst_relpath, "sync_move"
+            )
+
+            if not src_full_path or not dst_full_path:
+                return
+
+            # Create destination parent directory if needed
+            self._ensure_parent_directory(dst_full_path)
+
+            # Move file if source exists
+            if os.path.exists(src_full_path):
+                os.rename(src_full_path, dst_full_path)
+                print(f"📁 Sync: Moved {src_relpath} -> {dst_relpath}")
+            else:
+                print(f"Warning: Source file not found for move: {src_relpath}")
+
+        except Exception as e:
+            print(f"Error handling sync_move: {e}")
 
     async def start_server(self, port: int = None):
         """Start the WebSocket server."""

@@ -25,11 +25,18 @@ class RaySSHTerminal:
     """Main RaySSH client using terminal actors."""
 
     def __init__(
-        self, node_arg: str = None, ray_address: str = None, working_dir: str = None
+        self,
+        node_arg: str = None,
+        ray_address: str = None,
+        working_dir: str = None,
+        enable_sync: bool = False,
+        sync_local_root: str = None,
     ):
         self.node_arg = node_arg
         self.ray_address = ray_address
         self.working_dir = working_dir
+        self.enable_sync = enable_sync
+        self.sync_local_root = sync_local_root
         self.terminal_actor = None
         self.target_node = None
         self.client = None
@@ -326,7 +333,9 @@ class RaySSHTerminal:
                 return
 
             # Step 4: Connect to terminal
-            self.client = TerminalClient()
+            self.client = TerminalClient(
+                enable_sync=self.enable_sync, sync_local_root=self.sync_local_root
+            )
             connection_host = server_info["ip"]
 
             await self.client.connect_to_terminal(
@@ -335,6 +344,8 @@ class RaySSHTerminal:
                 working_dir=session_workdir,
                 cuda_visible_devices=cuda_visible_devices,
                 gpu_daemon_actor=gpu_daemon_actor,
+                enable_sync=self.enable_sync,
+                sync_local_root=self.sync_local_root,
             )
 
             # Save the successfully connected IP as last session

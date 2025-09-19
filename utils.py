@@ -942,3 +942,11 @@ def get_ray_dashboard_info() -> dict:
         pass
 
     return dashboard_info
+
+
+def get_sync_editor_warning_message() -> str:
+    """Get the warning message shown when users try to edit files in sync sessions."""
+    return """
+⚠️ `rayssh sync` is upload-only.
+[Enter] to continue, [Ctrl+C] to cancel and edit locally.
+"""

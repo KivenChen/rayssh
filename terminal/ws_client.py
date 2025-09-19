@@ -15,11 +15,13 @@ import shutil
 
 import websockets
 
+from .sync_client import SyncClient
+
 
 class TerminalClient:
     """WebSocket client that connects to a remote TerminalActor."""
 
-    def __init__(self):
+    def __init__(self, enable_sync: bool = False, sync_local_root: str = None):
         self.websocket = None
         self.original_termios = None
         self.running = False
@@ -30,6 +32,14 @@ class TerminalClient:
         self.session_id = None
         self.gpu_daemon_actor = None
 
+        # Sync functionality
+        self.enable_sync = enable_sync
+        self.sync_client = None
+        self._sync_task = None
+        if enable_sync and sync_local_root:
+            self.sync_client = SyncClient(sync_local_root)
+            # session_id will be set later when connection is established
+
     async def connect_to_terminal(
         self,
         host: str,
@@ -37,6 +47,8 @@ class TerminalClient:
         working_dir: str = None,
         cuda_visible_devices: str = None,
         gpu_daemon_actor=None,
+        enable_sync: bool = False,
+        sync_local_root: str = None,
     ):
         """Connect to the terminal server and start interactive session."""
         # Generate session ID
@@ -55,6 +67,8 @@ class TerminalClient:
             query_params["workdir"] = working_dir
         if cuda_visible_devices is not None:
             query_params["cuda_visible_devices"] = cuda_visible_devices
+        if enable_sync:
+            query_params["sync_enabled"] = "true"
             # print(f"🐛 Debug: Adding CUDA devices to query: {cuda_visible_devices}")
         else:
             # print(f"🐛 Debug: No CUDA devices to add (cuda_visible_devices={cuda_visible_devices})")
@@ -70,6 +84,22 @@ class TerminalClient:
             self.websocket = await websockets.connect(uri)
             print("✅ Connected! Terminal session started.")
 
+            # Initialize sync client if requested
+            if enable_sync and sync_local_root:
+                if not self.sync_client:
+                    self.sync_client = SyncClient(sync_local_root)
+                # Share the websocket connection and session_id
+                self.sync_client.websocket = self.websocket
+                self.sync_client.session_id = self.session_id
+                self.sync_client._external_websocket = True
+                print(f"📁 Sync enabled for directory: {sync_local_root}")
+            elif self.sync_client:
+                # Update existing sync client with session info
+                self.sync_client.websocket = self.websocket
+                self.sync_client.session_id = self.session_id
+                self.sync_client._external_websocket = True
+                print(f"📁 Sync enabled for directory: {self.sync_client.local_root}")
+
             # Set terminal to raw mode
             self.setup_terminal()
             self.running = True
@@ -79,6 +109,10 @@ class TerminalClient:
 
             # Start resize watcher
             self._resize_task = asyncio.create_task(self._watch_and_send_resize())
+
+            # Start sync watcher if enabled
+            if self.sync_client:
+                self._sync_task = asyncio.create_task(self._run_sync())
 
             # Start bidirectional communication
             input_task = asyncio.create_task(self.handle_input())
@@ -92,6 +126,14 @@ class TerminalClient:
                 input_task.cancel()
                 try:
                     await input_task
+                except asyncio.CancelledError:
+                    pass
+
+            # Ensure sync task is stopped if still running
+            if self._sync_task and not self._sync_task.done():
+                self._sync_task.cancel()
+                try:
+                    await self._sync_task
                 except asyncio.CancelledError:
                     pass
 
@@ -172,6 +214,19 @@ class TerminalClient:
         except asyncio.CancelledError:
             return
         except Exception:
+            return
+
+    async def _run_sync(self):
+        """Run the sync client in a separate task."""
+        if not self.sync_client:
+            return
+        try:
+            # Run sync without connecting (using shared websocket)
+            await self.sync_client.run()
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            print(f"Sync error: {e}")
             return
 
     async def handle_input(self):
@@ -266,6 +321,23 @@ class TerminalClient:
                 pass
             finally:
                 self._resize_task = None
+
+        # Stop sync watcher
+        if self._sync_task:
+            try:
+                self._sync_task.cancel()
+                await asyncio.gather(self._sync_task, return_exceptions=True)
+            except Exception:
+                pass
+            finally:
+                self._sync_task = None
+
+        # Cleanup sync client
+        if self.sync_client:
+            try:
+                await self.sync_client.cleanup()
+            except Exception:
+                pass
 
         # Restore terminal first
         try:
