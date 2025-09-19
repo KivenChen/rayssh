@@ -153,7 +153,7 @@ class RaySSHTerminal:
             import socket
 
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(2)
+            sock.settimeout(10)
 
             try:
                 result = sock.connect_ex((target_ip, 8080))
@@ -192,7 +192,7 @@ class RaySSHTerminal:
         # Start the terminal server (single call with timeout)
         try:
             server_info = ray.get(
-                self.terminal_actor.start_terminal_server.remote(), timeout=10.0
+                self.terminal_actor.start_terminal_server.remote(), timeout=30.0
             )
 
             if server_info:
