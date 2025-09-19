@@ -62,7 +62,7 @@ class RaySSHTerminal:
         except Exception:
             return None
 
-    def _create_gpu_daemon_actor(
+    async def _create_gpu_daemon_actor(
         self, n_gpus: float, session_id: str, preferred_node_id: str = None
     ):
         """Create GPU daemon actor with soft node affinity to preferred node."""
@@ -239,9 +239,24 @@ class RaySSHTerminal:
                 )
 
                 # Create GPU daemon actor on client side
-                gpu_daemon_actor, cuda_visible_devices = self._create_gpu_daemon_actor(
-                    n_gpus, session_id, preferred_node_id
-                )
+                import asyncio
+
+                try:
+                    gpu_daemon_actor, cuda_visible_devices = await asyncio.wait_for(
+                        self._create_gpu_daemon_actor(
+                            n_gpus, session_id, preferred_node_id
+                        ),
+                        timeout=10.0,
+                    )
+                except asyncio.TimeoutError:
+                    if preferred_node_id:
+                        print("🔄 Rescheduling GPU daemon actor")
+                        (
+                            gpu_daemon_actor,
+                            cuda_visible_devices,
+                        ) = await self._create_gpu_daemon_actor(
+                            n_gpus, session_id, None
+                        )
 
                 if gpu_daemon_actor and cuda_visible_devices:
                     # Get the actual node where GPU daemon was placed
