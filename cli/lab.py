@@ -30,12 +30,7 @@ def _select_worker_node_id(allow_head_if_no_worker: bool) -> str:
     import os as _os
     import ray as _ray
 
-    if not _ray.is_initialized():
-        addr = _os.environ.get("RAY_ADDRESS")
-        if addr:
-            ensure_ray_initialized(ray_address=addr, working_dir=None)
-        else:
-            ensure_ray_initialized()
+    ensure_ray_initialized(working_dir=None)
     nodes, head_node_id = fetch_cluster_nodes()
     if not nodes:
         raise RuntimeError("No alive Ray nodes found in the cluster")
@@ -85,20 +80,7 @@ def handle_lab_command(argv: List[str]) -> int:
     # Initialize Ray first
     ray_address_env = os.environ.get("RAY_ADDRESS")
     try:
-        if ray_address_env:
-            # Only upload working_dir if user explicitly specified a path
-            if lab_path:
-                ensure_ray_initialized(
-                    ray_address=ray_address_env, working_dir=lab_path
-                )
-            else:
-                ensure_ray_initialized(ray_address=ray_address_env, working_dir=None)
-        else:
-            if lab_path:
-                print(
-                    "Warning: [path] is only used in Ray Client mode (RAY_ADDRESS). Ignoring path."
-                )
-            ensure_ray_initialized()
+        ensure_ray_initialized(ray_address=ray_address_env, working_dir=lab_path)
     except Exception as e:
         msg = str(e)
         if "Version mismatch" in msg and "Python" in msg:

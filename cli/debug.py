@@ -40,10 +40,7 @@ def _select_worker_node_id(allow_head_if_no_worker: bool) -> str:
 
     if not _ray.is_initialized():
         addr = _os.environ.get("RAY_ADDRESS")
-        if addr:
-            ensure_ray_initialized(ray_address=addr, working_dir=None)
-        else:
-            ensure_ray_initialized()
+        ensure_ray_initialized(ray_address=addr, working_dir=None)
     nodes, head_node_id = fetch_cluster_nodes()
     if not nodes:
         raise RuntimeError("No alive Ray nodes found in the cluster")
@@ -139,20 +136,7 @@ def handle_debug_command(argv: List[str]) -> int:
             except Exception:
                 return None
 
-        if ray_address_env:
-            # Only upload working_dir if user explicitly specified a path
-            if code_path:
-                ensure_ray_initialized(
-                    ray_address=ray_address_env, working_dir=code_path
-                )
-            else:
-                ensure_ray_initialized(ray_address=ray_address_env, working_dir=None)
-        else:
-            if code_path:
-                print(
-                    "Warning: [path] is only used in Ray Client mode (RAY_ADDRESS). Ignoring path."
-                )
-            ensure_ray_initialized()
+        ensure_ray_initialized(ray_address=ray_address_env, working_dir=code_path)
 
     except Exception as e:
         msg = str(e)

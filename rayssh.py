@@ -49,42 +49,45 @@ def signal_handler(signum, frame):
 def main():
     """Main entry point."""
     # Check if RAY_ADDRESS is set for remote mode
-    ray_address_env = os.environ.get("RAY_ADDRESS")
+    if not (ray_address := os.environ.get("RAY_ADDRESS")):
+        print(
+            "Error: RAY_ADDRESS env var is not set. RaySSH is intended for remote-cluster use. To ensure consistency between local and remote processes, please set RAY_ADDRESS"
+            "in your environment. It can either be 'ray://<ip>:<port>' (Ray client server) or '<ip>:<port>' (Ray GCS server).",
+            file=sys.stderr,
+        )
+        return 1
+
     working_dir = None
     node_arg = None
 
     # Handle special commands first
     if len(sys.argv) == 1:
-        # No arguments - connect to random worker node (local) or remote HOME
-        if ray_address_env:
-            working_dir = None  # No working_dir means HOME
-            # else:
-            # Cluster connection - randomly connect to a worker node
-            try:
-                ensure_ray_initialized()
-                # Try previous session first
-                prefer_ip = load_last_session_preferred_ip()
-                if prefer_ip:
-                    try:
-                        node_info = find_node_by_ip(prefer_ip)
-                        if node_info and node_info.get("Alive"):
-                            node_arg = prefer_ip
-                        else:
-                            prefer_ip = None
-                    except Exception:
+        working_dir = None  # No working_dir means HOME
+        try:
+            ensure_ray_initialized(ray_address=ray_address)
+            # Try previous session first
+            prefer_ip = load_last_session_preferred_ip()
+            if prefer_ip:
+                try:
+                    node_info = find_node_by_ip(prefer_ip)
+                    if node_info and node_info.get("Alive"):
+                        node_arg = prefer_ip
+                    else:
                         prefer_ip = None
+                except Exception:
+                    prefer_ip = None
 
-                if not prefer_ip:
-                    # Use our custom node selection logic
-                    n_gpus = parse_n_gpus_from_env()
-                    selected_node = select_worker_node(n_gpus=n_gpus)
-                    node_arg = selected_node.get("NodeManagerAddress")
-            except ValueError as e:
-                print(f"Error: {e}")
-                return 1
-            except Exception as e:
-                print(f"Error selecting random worker node: {e}", file=sys.stderr)
-                return 1
+            if not prefer_ip:
+                # Use our custom node selection logic
+                n_gpus = parse_n_gpus_from_env()
+                selected_node = select_worker_node(n_gpus=n_gpus)
+                node_arg = selected_node.get("NodeManagerAddress")
+        except ValueError as e:
+            print(f"Error: {e}")
+            return 1
+        except Exception as e:
+            print(f"Error selecting random worker node: {e}", file=sys.stderr)
+            return 1
 
     elif len(sys.argv) == 2:
         argument = sys.argv[1]
@@ -145,7 +148,7 @@ def main():
         # Handle node index argument (-0, -1, -2, etc.)
         elif argument.startswith("-") and argument[1:].isdigit():
             try:
-                ensure_ray_initialized()
+                ensure_ray_initialized(ray_address=ray_address)
                 index = int(argument[1:])  # Extract number after '-'
                 node = get_node_by_index(index)
                 # Use the node's IP address as the connection target
@@ -260,7 +263,7 @@ def main():
             return 1
 
     try:
-        ensure_ray_initialized(ray_address=ray_address_env, working_dir=working_dir)
+        ensure_ray_initialized(ray_address=ray_address, working_dir=working_dir)
     except Exception as e:
         print(f"Error initializing Ray: {e}", file=sys.stderr)
         return 1
@@ -270,13 +273,13 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
 
     terminal = RaySSHTerminal(
-        node_arg, ray_address=ray_address_env, working_dir=working_dir
+        node_arg, ray_address=ray_address, working_dir=working_dir
     )
 
     # Persist last session info for cluster node connections
     # If this changes, terminal will overwrite it
     try:
-        if node_arg and not ray_address_env:
+        if node_arg and not ray_address:
             os.makedirs(os.path.expanduser("~/.rayssh"), exist_ok=True)
             last_path = os.path.expanduser("~/.rayssh/last_session.json")
             payload = {

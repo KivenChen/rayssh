@@ -204,12 +204,7 @@ def interactive_node_selector():
         import ray
         import os as _os
 
-        if not ray.is_initialized():
-            ray_addr = _os.environ.get("RAY_ADDRESS")
-            if ray_addr:
-                ensure_ray_initialized(ray_address=ray_addr, working_dir=None)
-            else:
-                ensure_ray_initialized()
+        ensure_ray_initialized(working_dir=None)
 
         # Get nodes in the same order as --ls table
         nodes, head_node_index = get_ordered_nodes()

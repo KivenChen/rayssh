@@ -231,6 +231,8 @@ def ensure_ray_initialized(
     global _LAST_RAY_ADDRESS_INFO, _LAST_RAY_DASHBOARD_URL
     if ray.is_initialized():
         return
+
+    ray_address = ray_address or os.environ.get("RAY_ADDRESS")
     try:
         # Set environment variables to suppress Ray logging
         os.environ["RAY_DISABLE_IMPORT_WARNING"] = "1"
@@ -253,7 +255,7 @@ def ensure_ray_initialized(
 
         # Prepare runtime environment for Ray Client
         runtime_env = {}
-        if working_dir and ray_address and ray_address.startswith("ray://"):
+        if working_dir:
             runtime_env["working_dir"] = working_dir
 
         # Add required modules for RaySSH actors
