@@ -18,6 +18,7 @@ from .job_utils import (
     parse_job_entrypoint_gpus,
     parse_per_node_gpus_for_multinode,
     get_master_port_default,
+    get_require_constraints_args,
 )
 from . import torchrun_orchestrator as orchestrator_module
 
@@ -95,6 +96,10 @@ def submit_file_job(file_path: str, no_wait: bool = False) -> int:
 
         if entrypoint_num_gpus_arg:
             cmd.append(entrypoint_num_gpus_arg)
+
+        # Add require constraints as entrypoint resources
+        require_args = get_require_constraints_args()
+        cmd.extend(require_args)
 
         if runtime_env_present:
             cmd.append(f"--runtime-env={runtime_env_file}")
@@ -266,6 +271,10 @@ def submit_shell_command(command: str) -> int:
         ]
         if entrypoint_num_gpus_arg:
             cmd.append(entrypoint_num_gpus_arg)
+
+        # Add require constraints as entrypoint resources
+        require_args = get_require_constraints_args()
+        cmd.extend(require_args)
 
         # Prefer runtime_env.yaml if present
         runtime_env_candidates = ["runtime_env.yaml"]

@@ -1,6 +1,7 @@
 import os
 import sys
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
+from utils import parse_require_constraints_from_env
 
 
 def validate_and_detect_interpreter(
@@ -140,3 +141,22 @@ def parse_per_node_gpus_for_multinode() -> tuple[Optional[str], Optional[str]]:
 
 def get_master_port_default() -> str:
     return os.environ.get("MASTER_PORT") or os.environ.get("master_port") or "29500"
+
+
+def get_require_constraints_args() -> List[str]:
+    """Get require constraints as Ray job entrypoint resource arguments.
+
+    Returns:
+        List of arguments to add to Ray job submit command for resource constraints
+    """
+    require_constraints = parse_require_constraints_from_env()
+    if not require_constraints:
+        return []
+
+    # Convert to JSON format as expected by --entrypoint-resources
+    import json
+
+    resources_json = json.dumps(require_constraints)
+
+    print(f"🎯 Applied require constraints to job: {require_constraints}")
+    return [f"--entrypoint-resources={resources_json}"]

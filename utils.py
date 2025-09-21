@@ -35,6 +35,83 @@ def parse_n_gpus_from_env() -> Optional[float]:
     return None
 
 
+def parse_require_constraints_from_env() -> Dict[str, float]:
+    """Parse require constraints from environment variable.
+
+    Parses the 'require' environment variable in format:
+    'accelerator_type:H20,some_other_resource=0.0001'
+
+    Rules:
+    - Comma-separated resource specifications
+    - If no '=<number>' is specified, defaults to 0.0001
+    - Supports both ':' and '=' as separators for resource names
+
+    Returns:
+        Dict mapping resource names to quantities for Ray actor options
+
+    Examples:
+        require='accelerator_type:H20' -> {'accelerator_type:H20': 0.0001}
+        require='memory_type:HBM=2.5,accelerator_type:V100' ->
+            {'memory_type:HBM': 2.5, 'accelerator_type:V100': 0.0001}
+    """
+    require_env = os.environ.get("require")
+    if not require_env or require_env.strip() == "":
+        return {}
+
+    constraints = {}
+    try:
+        # Split by comma to get individual resource specs
+        specs = [spec.strip() for spec in require_env.split(",") if spec.strip()]
+
+        for spec in specs:
+            if "=" in spec:
+                # Format: resource_name=quantity
+                resource_name, quantity_str = spec.split("=", 1)
+                resource_name = resource_name.strip()
+                try:
+                    quantity = float(quantity_str.strip())
+                    if quantity < 0:
+                        print(
+                            f"⚠️  Warning: Negative quantity {quantity} for resource '{resource_name}', using 0.0001"
+                        )
+                        quantity = 0.0001
+                except ValueError:
+                    print(
+                        f"⚠️  Warning: Invalid quantity '{quantity_str}' for resource '{resource_name}', using 0.0001"
+                    )
+                    quantity = 0.0001
+            else:
+                # Format: resource_name (use default quantity)
+                resource_name = spec.strip()
+                quantity = 0.0001
+
+            if resource_name:
+                constraints[resource_name] = quantity
+
+    except Exception as e:
+        print(f"⚠️  Warning: Failed to parse require constraints '{require_env}': {e}")
+        return {}
+
+    return constraints
+
+
+def apply_require_constraints_to_actor_options(actor_options: Dict) -> None:
+    """Apply require constraints from environment to actor options dict.
+
+    Modifies the actor_options dict in-place by adding resource constraints
+    from the 'require' environment variable.
+
+    Args:
+        actor_options: Dict that will be passed to Ray actor .options(**actor_options)
+    """
+    require_constraints = parse_require_constraints_from_env()
+    if require_constraints:
+        if "resources" not in actor_options:
+            actor_options["resources"] = {}
+        actor_options["resources"].update(require_constraints)
+        print(f"🎯 Applied require constraints: {require_constraints}")
+
+
 def select_worker_node(
     n_gpus: Optional[float] = None, prefer_ip: Optional[str] = None
 ) -> Dict:

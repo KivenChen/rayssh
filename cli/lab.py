@@ -22,6 +22,7 @@ from utils import (
     load_last_session_preferred_ip,
     find_node_by_ip,
     write_last_session_node_ip,
+    apply_require_constraints_to_actor_options,
 )
 
 
@@ -139,6 +140,10 @@ def handle_lab_command(argv: List[str]) -> int:
             }
             if n_gpus is not None:
                 actor_options["num_gpus"] = n_gpus
+
+            # Apply require constraints from environment
+            apply_require_constraints_to_actor_options(actor_options)
+
             cur_lab_actor = LabActor.options(**actor_options).remote()
     except Exception as e:
         print(f"Error creating LabActor: {e}", file=sys.stderr)

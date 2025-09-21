@@ -11,6 +11,9 @@ from ray.util.placement_group import (
 )
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
+# Import utils for require constraints parsing
+import utils
+
 logger = logging.getLogger("ray")
 
 
@@ -60,10 +63,20 @@ def main():
 
     # Build STRICT_SPREAD placement group with one bundle per node
     bundles = []
+
+    # Get require constraints from environment
+    require_constraints = utils.parse_require_constraints_from_env()
+    if require_constraints:
+        print(
+            f"🎯 Applied require constraints to placement group: {require_constraints}"
+        )
+
     for _ in range(n_nodes):
         b = {"CPU": 1}
         if g > 0:
             b["GPU"] = g
+        # Add require constraints to each bundle
+        b.update(require_constraints)
         bundles.append(b)
     pg = placement_group(bundles, strategy="STRICT_SPREAD")
     ray.get(pg.ready())
@@ -72,6 +85,12 @@ def main():
     actor_opts = {}
     if g > 0:
         actor_opts["num_gpus"] = g
+
+    # Apply require constraints to actor options
+    if require_constraints:
+        if "resources" not in actor_opts:
+            actor_opts["resources"] = {}
+        actor_opts["resources"].update(require_constraints)
     actors = []
     for i in range(n_nodes):
         strat = PlacementGroupSchedulingStrategy(

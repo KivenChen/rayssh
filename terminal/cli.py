@@ -18,6 +18,7 @@ from utils import (
     parse_n_gpus_from_env,
     write_last_session_node_ip,
     select_worker_node,
+    apply_require_constraints_to_actor_options,
 )
 
 
@@ -133,6 +134,9 @@ class RaySSHTerminal:
         """Start the terminal actor on target node."""
         # Terminal actor always uses 0 GPUs (GPU allocation handled separately by client)
         actor_options = {"num_gpus": 0}
+
+        # Apply require constraints from environment
+        apply_require_constraints_to_actor_options(actor_options)
 
         # We always have a specific target node now, so always use NodeAffinitySchedulingStrategy
         if not self.target_node or not self.target_node.get("NodeID"):

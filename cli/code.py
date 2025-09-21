@@ -25,6 +25,7 @@ from utils import (
     find_node_by_ip,
     write_last_session_node_ip,
     get_ray_dashboard_info,
+    apply_require_constraints_to_actor_options,
 )
 
 
@@ -576,6 +577,10 @@ def handle_code_command(argv: List[str]) -> int:
                     }
                     if n_gpus is not None:
                         actor_options["num_gpus"] = n_gpus
+
+                    # Apply require constraints from environment
+                    apply_require_constraints_to_actor_options(actor_options)
+
                     _apply_job_runtime_env_to_actor_options(
                         actor_options, job_or_submission_id
                     )
@@ -593,6 +598,10 @@ def handle_code_command(argv: List[str]) -> int:
                     }
                     if n_gpus is not None:
                         actor_options["num_gpus"] = n_gpus
+
+                    # Apply require constraints from environment
+                    apply_require_constraints_to_actor_options(actor_options)
+
                     _apply_job_runtime_env_to_actor_options(
                         actor_options, job_or_submission_id
                     )
