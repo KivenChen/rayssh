@@ -7,6 +7,7 @@ import sys
 import signal
 import asyncio
 import time
+from typing import Dict
 import ray
 import os
 
@@ -32,12 +33,14 @@ class RaySSHTerminal:
         working_dir: str = None,
         enable_sync: bool = False,
         sync_local_root: str = None,
+        resource_constraints: Dict = None,
     ):
         self.node_arg = node_arg
         self.ray_address = ray_address
         self.working_dir = working_dir
         self.enable_sync = enable_sync
         self.sync_local_root = sync_local_root
+        self.resource_constraints = resource_constraints
         self.terminal_actor = None
         self.target_node = None
         self.client = None
@@ -125,9 +128,13 @@ class RaySSHTerminal:
                 sys.exit(1)
         else:
             # Cluster connection: find the specific target node
-            self.target_node = find_target_node(self.node_arg)
+            self.target_node = find_target_node(
+                self.node_arg, resource_constraints=self.resource_constraints
+            )
             if not self.target_node:
-                print(f"Could not find target node: {self.node_arg}")
+                print(
+                    f"Could not find target node under current settings: {self.node_arg}"
+                )
                 sys.exit(1)
 
     def start_terminal_actor(self):

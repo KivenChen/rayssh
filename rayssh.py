@@ -33,6 +33,7 @@ from utils import (
     ensure_ray_initialized,
     load_last_session_preferred_ip,
     find_node_by_ip,
+    parse_require_constraints_from_env,
     select_worker_node,
     parse_n_gpus_from_env,
 )
@@ -60,6 +61,9 @@ def main():
     working_dir = None
     node_arg = None
 
+    # Get require constraints from environment
+    require_constraints = parse_require_constraints_from_env()
+
     # Handle special commands first
     if len(sys.argv) == 1:
         working_dir = None  # No working_dir means HOME
@@ -69,7 +73,9 @@ def main():
             prefer_ip = load_last_session_preferred_ip()
             if prefer_ip:
                 try:
-                    node_info = find_node_by_ip(prefer_ip)
+                    node_info = find_node_by_ip(
+                        prefer_ip, resource_constraints=require_constraints
+                    )
                     if node_info and node_info.get("Alive"):
                         node_arg = prefer_ip
                     else:
@@ -273,7 +279,10 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
 
     terminal = RaySSHTerminal(
-        node_arg, ray_address=ray_address, working_dir=working_dir
+        node_arg,
+        ray_address=ray_address,
+        working_dir=working_dir,
+        resource_constraints=require_constraints,
     )
 
     # Persist last session info for cluster node connections

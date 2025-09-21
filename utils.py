@@ -38,8 +38,11 @@ def parse_n_gpus_from_env() -> Optional[float]:
 def parse_require_constraints_from_env() -> Dict[str, float]:
     """Parse require constraints from environment variable.
 
-    Parses the 'require' environment variable in format:
+    Parses the 'require' or 'requires' environment variable in format:
     'accelerator_type:H20,some_other_resource=0.0001'
+
+    Environment variables checked (in order):
+    - require, REQUIRE, requires, REQUIRES
 
     Rules:
     - Comma-separated resource specifications
@@ -51,10 +54,15 @@ def parse_require_constraints_from_env() -> Dict[str, float]:
 
     Examples:
         require='accelerator_type:H20' -> {'accelerator_type:H20': 0.0001}
-        require='memory_type:HBM=2.5,accelerator_type:V100' ->
+        requires='memory_type:HBM=2.5,accelerator_type:V100' ->
             {'memory_type:HBM': 2.5, 'accelerator_type:V100': 0.0001}
     """
-    require_env = os.environ.get("require")
+    require_env = (
+        os.environ.get("require")
+        or os.environ.get("REQUIRE")
+        or os.environ.get("requires")
+        or os.environ.get("REQUIRES")
+    )
     if not require_env or require_env.strip() == "":
         return {}
 
@@ -109,7 +117,7 @@ def apply_require_constraints_to_actor_options(actor_options: Dict) -> None:
         if "resources" not in actor_options:
             actor_options["resources"] = {}
         actor_options["resources"].update(require_constraints)
-        print(f"🎯 Applied require constraints: {require_constraints}")
+        print(f"🎯 Applied additional constraints: {require_constraints}")
 
 
 def select_worker_node(
@@ -131,6 +139,9 @@ def select_worker_node(
     if not ray.is_initialized():
         raise RuntimeError("Ray must be initialized before selecting nodes")
 
+    # Get require constraints from environment
+    require_constraints = parse_require_constraints_from_env()
+
     nodes, head_node_id = fetch_cluster_nodes()
     if not nodes:
         raise RuntimeError("No alive Ray nodes found in the cluster")
@@ -148,33 +159,47 @@ def select_worker_node(
     if not worker_nodes:
         raise RuntimeError("No worker nodes available")
 
-    # If user prefers a specific IP, check if it's available and suitable
+    # Filter nodes by resource requirements (GPU + require constraints)
+    suitable_nodes = []
+    for node in worker_nodes:
+        resources = node.get("Resources", {})
+
+        # Check GPU requirements
+        if n_gpus is not None and n_gpus > 0:
+            available_gpus = resources.get("GPU", 0)
+            if available_gpus < n_gpus:
+                continue
+
+        # Check require constraints
+        meets_constraints = True
+        for resource_name, required_quantity in require_constraints.items():
+            available_quantity = resources.get(resource_name, 0)
+            if available_quantity < required_quantity:
+                meets_constraints = False
+                break
+
+        if meets_constraints:
+            suitable_nodes.append(node)
+
+    if not suitable_nodes:
+        constraint_info = []
+        if n_gpus is not None and n_gpus > 0:
+            constraint_info.append(f"GPUs >= {n_gpus}")
+        if require_constraints:
+            for resource_name, quantity in require_constraints.items():
+                constraint_info.append(f"{resource_name} >= {quantity}")
+        constraints_str = ", ".join(constraint_info) if constraint_info else "none"
+        raise RuntimeError(
+            f"No worker nodes meet resource constraints: {constraints_str}"
+        )
+
+    # If user prefers a specific IP, check if it's in suitable nodes
     if prefer_ip:
-        for node in worker_nodes:
+        for node in suitable_nodes:
             if node.get("NodeManagerAddress") == prefer_ip:
-                # Check if node has sufficient GPU resources
-                if n_gpus is not None:
-                    available_gpus = node.get("Resources", {}).get("GPU", 0)
-                    if available_gpus < n_gpus:
-                        print(
-                            f"⚠️  Preferred node {prefer_ip} has insufficient GPUs ({available_gpus} < {n_gpus})"
-                        )
-                        break
-                # Preferred node is suitable
+                print(f"🎯 Using preferred node {prefer_ip} (meets all constraints)")
                 return node
-
-    # Filter nodes by GPU requirements if specified
-    if n_gpus is not None and n_gpus > 0:
-        suitable_nodes = []
-        for node in worker_nodes:
-            available_gpus = node.get("Resources", {}).get("GPU", 0)
-            if available_gpus >= n_gpus:
-                suitable_nodes.append(node)
-
-        if not suitable_nodes:
-            raise RuntimeError(f"No worker nodes have sufficient GPUs (need {n_gpus})")
-
-        worker_nodes = suitable_nodes
+        print(f"⚠️  Preferred node {prefer_ip} does not meet resource constraints")
 
     # Select node with most available resources (simple heuristic)
     def node_score(node):
@@ -185,7 +210,8 @@ def select_worker_node(
         # Simple scoring: prioritize nodes with more total resources
         return cpu + memory / (1024**3) + gpu * 10  # Weight GPUs higher
 
-    selected_node = max(worker_nodes, key=node_score)
+    selected_node = max(suitable_nodes, key=node_score)
+
     return selected_node
 
 
@@ -232,20 +258,44 @@ def get_ray_cluster_nodes() -> List[Dict]:
     return nodes
 
 
-def find_node_by_ip(target_ip: str) -> Optional[Dict]:
-    """Find a Ray node by its IP address."""
+def find_node_by_ip(
+    target_ip: str, resource_constraints: Dict = None
+) -> Optional[Dict]:
+    """Find a Ray node by its IP address.
+
+    Args:
+        target_ip: Target node IP address
+        resource_constraints: Optional dict of resource requirements to check
+
+    Returns:
+        Node dict if found and meets constraints, None otherwise
+    """
     nodes, _ = fetch_cluster_nodes()
 
     for node in nodes:
         # Check both NodeManagerAddress and internal/external IPs
         node_ip = node.get("NodeManagerAddress")
-        if node_ip == target_ip:
-            return node
+        if node_ip != target_ip:
+            # Also check if the target IP matches any of the node's addresses
+            resources = node.get("Resources", {})
+            if ("node:" + target_ip) not in resources:
+                continue
 
-        # Also check if the target IP matches any of the node's addresses
-        resources = node.get("Resources", {})
-        if "node:" + target_ip in resources:
-            return node
+        # Check resource constraints if provided
+        if resource_constraints:
+            resources = node.get("Resources", {})
+            meets_constraints = True
+            for resource_name, required_quantity in resource_constraints.items():
+                available_quantity = resources.get(resource_name, 0)
+                if available_quantity < required_quantity:
+                    # print(f"⚠️  Node {node_ip} has insufficient {resource_name}: {available_quantity} < {required_quantity}")
+                    meets_constraints = False
+                    break
+
+            if not meets_constraints:
+                continue
+
+        return node
 
     return None
 
@@ -274,21 +324,52 @@ def find_ip_by_node_id(target_node_id: str) -> Optional[str]:
     return None
 
 
-def find_target_node(node_arg: str) -> Dict:
+def find_target_node(node_arg: str, resource_constraints: Dict = None) -> Dict:
     """
     Find the target Ray node based on IP address or node ID.
-    Returns the node information dict.
+
+    Args:
+        node_arg: IP address or node ID to find
+        resource_constraints: Optional resource constraints to check
+
+    Returns:
+        Node information dict
+
+    Raises:
+        ValueError: If node not found or doesn't meet constraints
     """
     arg_type, value = parse_node_argument(node_arg)
 
+    # Get require constraints from environment if not explicitly provided
+    if resource_constraints is None:
+        resource_constraints = parse_require_constraints_from_env()
+
     if arg_type == "ip":
-        node = find_node_by_ip(value)
+        node = find_node_by_ip(value, resource_constraints=resource_constraints)
         if not node:
-            raise ValueError(f"No Ray node found with IP address: {value}")
+            constraint_info = ""
+            if resource_constraints:
+                constraint_strs = [
+                    f"{name}>={qty}" for name, qty in resource_constraints.items()
+                ]
+                constraint_info = f" meeting constraints: {', '.join(constraint_strs)}"
+            raise ValueError(
+                f"No Ray node found with IP address: {value}{constraint_info}"
+            )
     else:  # node_id
         node = find_node_by_id(value)
         if not node:
             raise ValueError(f"No Ray node found with node ID: {value}")
+
+        # Check resource constraints for node ID lookup too
+        if resource_constraints:
+            resources = node.get("Resources", {})
+            for resource_name, required_quantity in resource_constraints.items():
+                available_quantity = resources.get(resource_name, 0)
+                if available_quantity < required_quantity:
+                    raise ValueError(
+                        f"Node {value} has insufficient {resource_name}: {available_quantity} < {required_quantity}"
+                    )
 
     # Check if node is alive
     if not node.get("Alive", False):

@@ -67,9 +67,7 @@ def main():
     # Get require constraints from environment
     require_constraints = utils.parse_require_constraints_from_env()
     if require_constraints:
-        print(
-            f"🎯 Applied require constraints to placement group: {require_constraints}"
-        )
+        print(f"🎯 Applied resource constraints to placement group: {require_constraints}")
 
     for _ in range(n_nodes):
         b = {"CPU": 1}

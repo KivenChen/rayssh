@@ -55,6 +55,11 @@ def handle_sync_command(argv: List[str]) -> int:
         print(f"Error initializing Ray with directory: {e}", file=sys.stderr)
         return 1
 
+    # Get require constraints from environment
+    from utils import parse_require_constraints_from_env
+
+    require_constraints = parse_require_constraints_from_env()
+
     # Create terminal with sync enabled
     terminal = RaySSHTerminal(
         node_arg,
@@ -62,6 +67,7 @@ def handle_sync_command(argv: List[str]) -> int:
         working_dir=sync_dir,
         enable_sync=True,
         sync_local_root=sync_dir,
+        resource_constraints=require_constraints,
     )
 
     try:

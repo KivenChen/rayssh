@@ -157,6 +157,4 @@ def get_require_constraints_args() -> List[str]:
     import json
 
     resources_json = json.dumps(require_constraints)
-
-    print(f"🎯 Applied require constraints to job: {require_constraints}")
     return [f"--entrypoint-resources={resources_json}"]
