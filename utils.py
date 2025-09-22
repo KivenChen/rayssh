@@ -422,8 +422,9 @@ def ensure_ray_initialized(
             import agent
             import terminal
             import utils
+            import watchfiles
 
-            runtime_env["py_modules"] = [agent, terminal, utils]
+            runtime_env["py_modules"] = [agent, terminal, utils, watchfiles]
         except ImportError as e:
             # If modules can't be imported, continue without py_modules
             print(f"Error importing modules: {e}")

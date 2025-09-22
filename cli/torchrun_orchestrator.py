@@ -90,6 +90,7 @@ def main():
             actor_opts["resources"] = {}
         actor_opts["resources"].update(require_constraints)
     actors = []
+    actor_ips = []
     for i in range(n_nodes):
         strat = PlacementGroupSchedulingStrategy(
             placement_group=pg,
@@ -98,9 +99,10 @@ def main():
         )
         a = Runner.options(scheduling_strategy=strat, **actor_opts).remote()
         actors.append(a)
+        actor_ips.append(ray.get(a.get_ip.remote()))
 
     # First actor determines master address
-    master_address = ray.get(actors[0].get_ip.remote())
+    master_address = actor_ips[0]
 
     # Launch processes on each actor
     futures = []
@@ -113,8 +115,11 @@ def main():
         }
         cmd = [interpreter, file_path]
         futures.append(actor.run.remote(cmd, envmap, rank))
-        logger.info(f"Launched process on node {rank}, actor: {actor}")
-
+        logger.info(f"Launched process on node #{rank}, ip: {actor_ips[rank]}, actor: {actor}")
+    logger.info(f"Launched processes on {n_nodes} nodes:")
+    logger.info(f"Master address: {master_address}")
+    logger.info(f"Master port: {master_port}")
+    logger.info(f"Node IPs: {actor_ips}")
     # Collect results incrementally without timeouts using ray.wait
     results = ray.get(list(futures))
 
