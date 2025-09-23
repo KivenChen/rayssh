@@ -1,6 +1,7 @@
 import os
 import sys
 import subprocess
+from typing import Dict
 
 import ray
 from ray.util import get_node_ip_address
@@ -12,9 +13,77 @@ from ray.util.placement_group import (
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 # Import utils for require constraints parsing
-import utils
 
 logger = logging.getLogger("ray")
+
+# NOTE(kiv): this is a copy from utils.py to reduce dependency on RaySSH
+def parse_require_constraints_from_env() -> Dict[str, float]:
+    """Parse require constraints from environment variable.
+
+    Parses the 'require' or 'requires' environment variable in format:
+    'accelerator_type:H20,some_other_resource=0.0001'
+
+    Environment variables checked (in order):
+    - require, REQUIRE, requires, REQUIRES
+
+    Rules:
+    - Comma-separated resource specifications
+    - If no '=<number>' is specified, defaults to 0.0001
+    - Supports both ':' and '=' as separators for resource names
+
+    Returns:
+        Dict mapping resource names to quantities for Ray actor options
+
+    Examples:
+        require='accelerator_type:H20' -> {'accelerator_type:H20': 0.0001}
+        requires='memory_type:HBM=2.5,accelerator_type:V100' ->
+            {'memory_type:HBM': 2.5, 'accelerator_type:V100': 0.0001}
+    """
+    require_env = (
+        os.environ.get("require")
+        or os.environ.get("REQUIRE")
+        or os.environ.get("requires")
+        or os.environ.get("REQUIRES")
+    )
+    if not require_env or require_env.strip() == "":
+        return {}
+
+    constraints = {}
+    try:
+        # Split by comma to get individual resource specs
+        specs = [spec.strip() for spec in require_env.split(",") if spec.strip()]
+
+        for spec in specs:
+            if "=" in spec:
+                # Format: resource_name=quantity
+                resource_name, quantity_str = spec.split("=", 1)
+                resource_name = resource_name.strip()
+                try:
+                    quantity = float(quantity_str.strip())
+                    if quantity < 0:
+                        print(
+                            f"⚠️  Warning: Negative quantity {quantity} for resource '{resource_name}', using 0.0001"
+                        )
+                        quantity = 0.0001
+                except ValueError:
+                    print(
+                        f"⚠️  Warning: Invalid quantity '{quantity_str}' for resource '{resource_name}', using 0.0001"
+                    )
+                    quantity = 0.0001
+            else:
+                # Format: resource_name (use default quantity)
+                resource_name = spec.strip()
+                quantity = 0.0001
+
+            if resource_name:
+                constraints[resource_name] = quantity
+
+    except Exception as e:
+        print(f"⚠️  Warning: Failed to parse require constraints '{require_env}': {e}")
+        return {}
+
+    return constraints
+
 
 
 @ray.remote
@@ -65,7 +134,7 @@ def main():
     bundles = []
 
     # Get require constraints from environment
-    require_constraints = utils.parse_require_constraints_from_env()
+    require_constraints = parse_require_constraints_from_env()
     if require_constraints:
         print(f"🎯 Applied resource constraints to placement group: {require_constraints}")
 
