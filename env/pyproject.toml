@@ -1,0 +1,234 @@
+[build-system]
+requires = [
+    "setuptools==70.3.0",  # https://github.com/astral-sh/uv/issues/5551
+    "wheel",
+    "buildtools",
+]
+# build-backend = "setuptools.build_meta"
+
+
+
+[project]
+name = "verl"
+version = "0.5.0"
+description = "verl: Volcano Engine Reinforcement Learning for LLM"
+license = {text = "Apache-2.0"}  # Changed from file to text format
+readme = {file = "README.md", content-type = "text/markdown"}
+requires-python = "==3.12.0"  # should be < 3.13, because of https://github.com/onnx/onnx/issues/7249
+
+dependencies = [
+    "ml_dtypes>=0.5.0",  # https://github.com/onnx/onnx/issues/7249
+    "ray[default]==2.48",
+    "jax<0.7.0",
+    "nvidia-cudnn-cu12",
+    "polaris-cpp-py",
+    "transformer-engine",
+    "flash-attn",
+    "flashinfer-python",
+    "tensordict>=0.8.0,<=0.9.1,!=0.9.0",
+    "omegaconf",
+    "megatron-core",
+    "pandas",
+    "sglang[all]",
+    "deep-gemm",
+    "uvloop",
+    "torch_memory_saver",
+    "peft",
+    "pyarrow>=19.0.0",
+    "pybind11",
+    "pylatexenc",
+    "pre-commit",
+    "liger-kernel",
+    "accelerate",
+    "codetiming",
+    "datasets>=4.0.0",
+    "dill",
+    "hydra-core",
+    "protobuf",
+    "pydantic",
+    "Requests",
+    "unicorn",
+    "wandb",
+    "mlflow",
+    "torchdata",
+    "transformers>=4.55",
+    "torch",
+    "tensorboard",
+    "torchaudio",
+    "torchvision", 
+    "cuda-python",
+    "latex2sympy2_extended",
+    "math_verify",
+    "pybase64",
+    "nvtx",
+    "mcp",
+    "openai",
+    "pyzmq",
+    "google-generativeai",
+    "google-auth==2.36.0",
+    "google-genai",
+    "json_repair",
+    "debug",
+    "aiohttp",
+    "tqdm",
+    "numpy",
+    "IPython",
+    "setproctitle",
+    "blobfile==3.0.0",
+    "build",
+    "sgl-kernel",
+    "compressed-tensors",
+    "einops",
+    "fastapi",
+    "hf_transfer",
+    "huggingface_hub",
+    "interegular",
+    "llguidance>=0.7.11,<0.8.0",
+    "modelscope",
+    "msgspec",
+    "ninja",
+    "openai-harmony==0.0.4",
+    "orjson",
+    "outlines==0.1.11",
+    "packaging",
+    "partial_json_parser",
+    "pillow",
+    "onnx",  # Note(kiv): this MUST be installed, or TE won't work.
+    "onnxscript",
+    "prometheus-client>=0.20.0",
+    "psutil",
+    "python-multipart",
+    "sentencepiece",
+    "soundfile==0.13.1",
+    "scipy",
+    "timm==1.0.16",
+    "tiktoken",
+    "torchao==0.9.0",
+    "uvicorn",
+    "xgrammar==0.1.23",
+    "beautifulsoup4",
+    "lxml",
+    "html5lib",
+    "regex",
+    "openpyxl",
+    "python-dateutil",
+    "pytz",
+    "tzdata",
+    "websockets",
+    "httpcore",
+    "filelock",
+    "fsspec",
+    "toml",
+    "six",
+    "pytest",
+    "pytest-cov",
+    "coverage",
+    "duckduckgo-search",
+    "readabilipy",
+    "markdownify",
+    "yfinance",
+    "streamlit-scrollable-textbox",
+    "ms-swift",
+    "apex",
+    "nvidia-cuda-nvcc",
+    "nvidia_cudnn_frontend",
+    "mbridge"
+]
+
+[[tool.uv.index]]
+name = "tencent"
+url = "https://mirrors.tencent.com/pypi/simple"
+default = true
+
+[tool.uv.extra-build-dependencies]
+flash-attn = ["torch"]
+deep-gemm = ["torch"]
+transformer-engine = ["setuptools==70.3.0", "torch", "buildtools",  "numpy", "jax<0.7.0", "pybind11", "nvidia-cudnn-cu12","nvtx", "nvidia-cuda-nvcc", "nvidia_cudnn_frontend"]
+transformer-engine-torch = [ "setuptools==70.3.0", "torch", "buildtools", "numpy", "jax<0.7.0", "pybind11", "nvidia-cudnn-cu12","nvtx", "nvidia-cuda-nvcc", "nvidia_cudnn_frontend"]
+apex = ["setuptools", "wheel", "torch", "pybind11", "packaging", "numpy"]
+
+[tool.uv]
+no-build-isolation-package = ["transformer-engine"]
+
+
+[tool.uv.extra-build-variables.transformer-engine]
+NVTE_FRAMEWORK = "pytorch"
+MAX_JOBS = "300"
+NVTE_BUILD_THREADS_PER_JOB = "4"
+
+[[tool.uv.dependency-metadata]]
+name = "transformer-engine"
+version = "2.5.0"
+requires-dist = ["setuptools==70.3.0", "wheel", "buildtools", "numpy", "jax<0.7.0", "pybind11", "nvidia-cudnn-cu12","nvtx", "nvidia-cuda-nvcc", "torch", "nvidia_cudnn_frontend"]
+
+[tool.uv.extra-build-variables.flash-attn]
+# NOTE(kiv): we STRONGLY recommend that youset this to TRUE.
+# except on TencentOS < 4, where GLIBC is too old and compile-install is necessary.
+FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE"
+# MAX_JOBS = "300"
+# FLASH_ATTENTION_FORCE_BUILD = "FALSE"
+
+[tool.uv.extra-build-variables.apex]
+# NOTE(kiv): CUDA_HOME is necessary for apex, EVEN WITH envless image which has no cuda runtime
+# apex relies on this to find nvcc for compilation only, which envless image includes.
+# therefore, we set it to /opt/conda to let Apex discover nvcc.
+CUDA_HOME = "/opt/conda"
+TORCH_CUDA_ARCH_LIST = "7.5;8.0;8.6;9.0+PTX"
+APEX_CUDA_EXT = "1"
+APEX_CPP_EXT = "1"
+MAX_JOBS = "300"
+APEX_PARALLEL_BUILD = "300"
+NVCC_APPEND_FLAGS = "--threads 4"
+
+[tool.uv.extra-build-variables.deep-gemm]
+# NOTE(kiv): same here, only to signal the nvcc location to deep-gemm build process.
+CUDA_HOME = "/opt/conda"
+
+[tool.uv.sources]
+# deep_research_yuanbao should be moved to workspace implementation
+megatron-core = { git = "https://github.com/NVIDIA/Megatron-LM", tag = "core_v0.14.0rc6" }
+transformer-engine = { git = "https://github.com/NVIDIA/TransformerEngine", rev = "93a67af81a98f6542ecb2e414360bd0a74ca4367" }
+deep-gemm = { git = "https://github.com/deepseek-ai/DeepGemm" }
+apex = { git = "https://github.com/NVIDIA/apex", tag = "25.08" }
+
+# -------------------------------
+# tool.ruff - Linting configuration
+# -------------------------------
+[tool.ruff]
+# Note: While the formatter will attempt to format lines such that they remain within the line-length,
+# it isn't a hard upper bound, and formatted lines may exceed the line-length.
+line-length = 120
+exclude = ["tests/workers/rollout/test_sglang_async_rollout_sf_tools.py", "scripts/legacy_model_merger.py"]
+
+[tool.ruff.lint]
+isort = {known-first-party = ["verl"]}
+# c.f. https://github.com/vllm-project/vllm/blob/ce8d6b75fc0586045df75ee1568a5b5f9957251b/pyproject.toml
+select = [
+    # pycodestyle
+    "E",
+    # Pyflakes
+    "F",
+    # pyupgrade
+    "UP",
+    # flake8-bugbear
+    "B",
+    # isort
+    "I",
+    "G",
+]
+ignore = [
+    # star imports
+    "F405", "F403",
+    # lambda expression assignment
+    "E731",
+    # Loop control variable not used within loop body
+    "B007",
+    # f-string format
+    "UP032",
+    # `.log()` statement uses f-string
+    "G004",
+    # X | None for type annotations
+    "UP045",
+    # deprecated import
+    "UP035",
+]
