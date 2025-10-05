@@ -8,10 +8,16 @@
 
 ## Installation
 
+First, figure out your Ray cluster's Ray version and Python version - we need to align them.
+
+Then, install RaySSH using `uv`, so that it runs in a dedicated environment that aligns with your Ray cluster.
+
 ```bash
-git clone https://github.com/kivenchen/RaySSH.git
-cd rayssh
-pip install -e .
+# Install RaySSH as a tool with the Ray executables and a specific Python
+uv tool install \
+  --with-executables-from "ray[default]==<target_cluster_ray_version>" \
+  --python <target_cluster_python_version> \
+  git+https://github.com/kivenchen/RaySSH.git
 ```
 
 After installation, you can use the `rayssh` command from your terminal directly.
@@ -19,34 +25,30 @@ After installation, you can use the `rayssh` command from your terminal directly
 ## Quick Start
 
 **Basic Commands:**
-- `rayssh` - Random worker connection
-- `rayssh <ip|node_id|-index>` - Connect to specific node
-- `rayssh <dir>` - Remote mode with directory upload
-- `rayssh <file>` - Submit and run file as Ray job
-- `rayssh lab [-q] [path]` - Launch Jupyter Lab on a worker node; tails log for URL. With `-q`, exit after showing link. The optional `path` will be uploaded as working dir.
-- `rayssh code [-q] [path]` - Launch code-server (VS Code) on a worker node; behaves like `lab`. The optional `path` will be uploaded as working dir.
-- `rayssh -l` - Interactive node selection
-- `rayssh --ls` - Print nodes table
+- `rayssh` — Random worker connection
+- `rayssh -l` — Interactive node selection
+- `rayssh <ip|node_id|-index>` — Connect to a specific node
+- `rayssh <dir>` — Remote mode with directory upload
+- `rayssh <file>` — Submit and run file as a Ray job
+- `rayssh lab [-q] [path]` — Launch JupyterLab; optional upload path
+- `rayssh code [-q] [path]` — Launch code-server (VS Code); optional upload path
+- `rayssh --ls` — Print nodes table
 
 **Configuration:**
 - `export RAY_ADDRESS=ray://remote-cluster-host:port`
 
-## Usage Scenarios
+## Examples
 
-### 1. 🧪 Development & Debugging
-
-**Debug on specific nodes:**
 ```bash
-# Check which nodes are available
-rayssh --ls
+# 1) Configure once for your cluster
+export RAY_ADDRESS=ray://remote-cluster-host:10001
 
-# Quick random worker connection
-rayssh
+# 2) Connect and inspect
+rayssh              # random worker
 > ray status
-> python train_model.py
-```
 
-### 2. 🌐 Remote Cluster Development
+# 3) Remote dev with upload, then open VS Code in the browser
+rayssh code -q ~/my-project   # uploads path, prints URL, exits (server keeps running)
 
 **Set up remote development environment:**
 ```bash
@@ -62,72 +64,17 @@ echo "*.parquet" >> .gitignore
 # You can also customize your runtime environment in a runtime_env.yaml
 vim runtime_env.yaml
 # Upload your project and start working
-rayssh .
+rayssh sync .
 # Your project files are now uploaded to remotely
 > ls                    # See your uploaded files
 > mount -t nfs 192.168.1.100:/workspace/datasets /mnt/datasets
-> vim train_config.py          # Edit remote copies of your files
+> vim train_config.py          # Edit remote copies of your files, which syncs back to local automatically
 > python train.py       # Run training on cluster
 ```
 
-**Or run local jobs on remote:**
-```bash
-# Submit job with your curdir as workspace
-rayssh train_model.py
-# Output: Job submitted, logs streaming, Ctrl-C to abort...
-
-# Quick submit without waiting
-rayssh -q preprocess_data.py
-# Output: Job submitted, check Ray Dashboard for logs
-
-ray job list
-ray job stop <job_id>
-```
-
-**Mixed workflow:**
-### 3. 🧪 Jupyter Lab on the Cluster
-### 4. 🧰 VS Code (code-server) on the Cluster
-
-```bash
-# Local cluster
-rayssh code           # Blocks and tails log; Ctrl-C stops server
-rayssh code -q        # Show link and exit; server keeps running
-
-# Remote mode with workspace upload
-export RAY_ADDRESS=ray://gpu-cluster.remote:10001
-rayssh code ~/my-project
-```
-
-Notes:
-- code-server binds like Jupyter; on macOS, 80 becomes 8888 automatically.
-- A password is generated for each session.
-
-Start a Jupyter Lab on a worker node that other machines can access:
-
-```bash
-# Local cluster
-rayssh lab                # Blocks and tails log until interrupted (server stays up)
-rayssh lab -q             # Tail briefly to show URL, then exit
-
-# Remote mode with workspace upload
-export RAY_ADDRESS=ray://gpu-cluster.remote:10001
-rayssh lab ~/my-notebooks # Uploads the path and opens Lab at that root
-```
-
-Notes:
-- Lab binds to port 80 and detects a reachable host IP so URLs are accessible off-box.
-- If a path is provided in remote mode, it is uploaded via Ray Client and used as `--ServerApp.root_dir`.
-- `-q` tails the log until the access URL is visible, then exits; the server keeps running.
-
-```bash
-# Submit data preprocessing job
-rayssh -q preprocess.py
-
-# While that runs, work interactively
-rayssh ~/train
-> vim runtime_env.yaml
-> vim train.py
-> python train.py
+# 6) Pick a specific node, then start JupyterLab
+rayssh -l            # choose node interactively
+rayssh lab -q        # prints URL, exits (server keeps running)
 ```
 
 ## Interactive Shell Features

@@ -47,15 +47,14 @@ def parse_require_constraints_from_env() -> Dict[str, float]:
     Rules:
     - Comma-separated resource specifications
     - If no '=<number>' is specified, defaults to 0.0001
-    - Supports both ':' and '=' as separators for resource names
 
     Returns:
         Dict mapping resource names to quantities for Ray actor options
 
     Examples:
         require='accelerator_type:H20' -> {'accelerator_type:H20': 0.0001}
-        requires='memory_type:HBM=2.5,accelerator_type:V100' ->
-            {'memory_type:HBM': 2.5, 'accelerator_type:V100': 0.0001}
+        requires='memory_type:HBM,accelerator_type:V100,memory_gb=100' ->
+            {'memory_type:HBM': 0.0001, 'accelerator_type:V100': 0.0001, 'memory_gb': 100}
     """
     require_env = (
         os.environ.get("require")
