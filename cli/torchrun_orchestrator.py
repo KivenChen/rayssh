@@ -16,6 +16,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 logger = logging.getLogger("ray")
 
+
 # NOTE(kiv): this is a copy from utils.py to reduce dependency on RaySSH
 def parse_require_constraints_from_env() -> Dict[str, float]:
     """Parse require constraints from environment variable.
@@ -85,7 +86,6 @@ def parse_require_constraints_from_env() -> Dict[str, float]:
     return constraints
 
 
-
 @ray.remote
 class Runner:
     def get_ip(self):
@@ -136,7 +136,9 @@ def main():
     # Get require constraints from environment
     require_constraints = parse_require_constraints_from_env()
     if require_constraints:
-        print(f"🎯 Applied resource constraints to placement group: {require_constraints}")
+        print(
+            f"🎯 Applied resource constraints to placement group: {require_constraints}"
+        )
 
     for _ in range(n_nodes):
         b = {"CPU": 1}
@@ -184,7 +186,9 @@ def main():
         }
         cmd = [interpreter, file_path]
         futures.append(actor.run.remote(cmd, envmap, rank))
-        logger.info(f"Launched process on node #{rank}, ip: {actor_ips[rank]}, actor: {actor}")
+        logger.info(
+            f"Launched process on node #{rank}, ip: {actor_ips[rank]}, actor: {actor}"
+        )
     logger.info(f"Launched processes on {n_nodes} nodes:")
     logger.info(f"Master address: {master_address}")
     logger.info(f"Master port: {master_port}")
