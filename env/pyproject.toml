@@ -18,7 +18,7 @@ requires-python = "==3.12.0"  # should be < 3.13, because of https://github.com/
 
 dependencies = [
     "ml_dtypes>=0.5.0",  # https://github.com/onnx/onnx/issues/7249
-    "ray[default]==2.48",
+    "ray[default]",
     "jax<0.7.0",
     "nvidia-cudnn-cu12",
     "polaris-cpp-py",
@@ -136,8 +136,8 @@ dependencies = [
 ]
 
 [[tool.uv.index]]
-name = "tencent"
-url = "https://mirrors.tencent.com/pypi/simple"
+name = "aliyun"
+url = "https://mirrors.aliyun.com/pypi/simple"
 default = true
 
 [tool.uv.extra-build-dependencies]
@@ -147,18 +147,17 @@ transformer-engine = ["setuptools==70.3.0", "torch", "buildtools",  "numpy", "ja
 transformer-engine-torch = [ "setuptools==70.3.0", "torch", "buildtools", "numpy", "jax<0.7.0", "pybind11", "nvidia-cudnn-cu12","nvtx", "nvidia-cuda-nvcc", "nvidia_cudnn_frontend"]
 apex = ["setuptools", "wheel", "torch", "pybind11", "packaging", "numpy"]
 
-[tool.uv]
-no-build-isolation-package = ["transformer-engine"]
+# [tool.uv]
+# no-build-isolation-package = ["transformer-engine"]
 
 
 [tool.uv.extra-build-variables.transformer-engine]
 NVTE_FRAMEWORK = "pytorch"
-MAX_JOBS = "300"
+MAX_JOBS = "32"
 NVTE_BUILD_THREADS_PER_JOB = "4"
 
 [[tool.uv.dependency-metadata]]
 name = "transformer-engine"
-version = "2.5.0"
 requires-dist = ["setuptools==70.3.0", "wheel", "buildtools", "numpy", "jax<0.7.0", "pybind11", "nvidia-cudnn-cu12","nvtx", "nvidia-cuda-nvcc", "torch", "nvidia_cudnn_frontend"]
 
 [tool.uv.extra-build-variables.flash-attn]
